@@ -60,7 +60,7 @@ const COLORS = {
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
   private plans: [RoundPlan, RoundPlan] = [emptyPlan(), emptyPlan()];
-  private phase: "planning" | "resolving" | "over" = "planning";
+  private phase: "intro" | "planning" | "resolving" | "over" = "intro";
   private timerSeconds = PLAN_SECONDS;
   private paused = false;
   private resolveElapsed = 0;
@@ -77,6 +77,8 @@ export class GameScene extends Phaser.Scene {
   private foreground!: Phaser.GameObjects.Graphics;
   private stars: LayeredParticle[] = [];
   private uiRoot!: Phaser.GameObjects.Container;
+  private introRoot?: Phaser.GameObjects.Container;
+  private introButton?: CanvasButton;
   private colonyPanels: ColonyPanel[] = [];
   private cardViews: CardView[] = [];
   private cardViewsByUid = new Map<string, CardView>();
@@ -120,6 +122,9 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     this.state = createGame("solo");
+    this.phase = "intro";
+    this.timerSeconds = PLAN_SECONDS;
+    this.paused = false;
     this.input.dragDistanceThreshold = 8;
     this.screenWidth = this.scale.width;
     this.screenHeight = this.scale.height;
@@ -131,7 +136,7 @@ export class GameScene extends Phaser.Scene {
     this.buildInterface();
     this.scale.on(Phaser.Scale.Events.RESIZE, this.onResize, this);
     this.input.keyboard?.on("keydown-SPACE", () => this.togglePause());
-    this.input.keyboard?.on("keydown-ENTER", () => this.submitPlan());
+    this.input.keyboard?.on("keydown-ENTER", () => this.phase === "intro" ? this.startMission() : this.submitPlan());
     this.input.keyboard?.on("keydown-R", () => this.restart());
     this.input.keyboard?.on("keydown-ONE", () => this.toggleCardByIndex(0));
     this.input.keyboard?.on("keydown-TWO", () => this.toggleCardByIndex(1));
@@ -143,7 +148,6 @@ export class GameScene extends Phaser.Scene {
       loading.classList.add("is-ready");
       window.setTimeout(() => loading.remove(), 260);
     }
-    this.animateCardsIn();
   }
 
   update(time: number, delta: number): void {
@@ -285,6 +289,7 @@ export class GameScene extends Phaser.Scene {
     this.ambientFx.forEach((fx) => fx.setPosition(fx.x, fx.y));
     const width = this.screenWidth;
     const height = this.screenHeight;
+    const tiny = height < 460;
     const narrow = width < 900 || height < 560;
     this.narrowLayout = narrow;
     const compact = height < 790;
@@ -298,13 +303,14 @@ export class GameScene extends Phaser.Scene {
     this.buildHeader(width, headerY, narrow);
     this.buildTimeline(width, timelineY, narrow);
     this.buildColonies(leftX, rightX, panelY, panelWidth, panelHeight);
-    const eventY = panelY + panelHeight + (narrow ? 30 : compact ? 41 : 46);
-    this.buildEventSpotlight(eventY, width, compact, narrow);
+    const eventY = panelY + panelHeight + (tiny ? 16 : narrow ? 30 : compact ? 41 : 46);
+    this.buildEventSpotlight(eventY, width, compact, narrow, tiny);
     this.buildHand(width, height, compact, narrow);
     this.refreshBoard();
     this.updateHeader();
     this.updateActionPanel();
     this.updateEventSpotlight();
+    if (this.phase === "intro") this.buildIntroOverlay();
     if (this.phase === "over") this.buildOutcomeOverlay();
   }
 
@@ -316,6 +322,10 @@ export class GameScene extends Phaser.Scene {
     this.actionButton?.destroy();
     this.emergencyButton?.destroy();
     this.pauseButton?.destroy();
+    this.introButton?.destroy();
+    if (this.introRoot?.active) this.introRoot.destroy(true);
+    this.introRoot = undefined;
+    this.introButton = undefined;
     this.actionButton = undefined;
     this.emergencyButton = undefined;
     this.pauseButton = undefined;
@@ -338,7 +348,7 @@ export class GameScene extends Phaser.Scene {
       color: "#70dff1",
       letterSpacing: 1.1,
     }).setOrigin(0, 0.5);
-    this.phaseLabel = this.add.text(width * 0.32, y, this.phase === "planning" ? "PLANIFICACIÓN" : "RESOLUCIÓN", {
+    this.phaseLabel = this.add.text(width * 0.32, y, this.phase === "intro" ? "MISIÓN" : this.phase === "planning" ? "PLANIFICACIÓN" : "RESOLUCIÓN", {
       fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
       fontSize: "11px",
       fontStyle: "bold",
@@ -367,6 +377,7 @@ export class GameScene extends Phaser.Scene {
       stroke: 0x8fdcf0,
       text: "#eaf7ff",
     }, narrow ? 8 : 10);
+    this.pauseButton.setEnabled(this.phase === "planning");
     this.uiRoot.add([titleIcon, title, subtitle, this.phaseLabel, this.dayLabel, this.progressDots, this.timerBar, this.timerLabel, this.pauseButton.container]);
   }
 
@@ -457,49 +468,50 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private buildEventSpotlight(y: number, width: number, compact: boolean, narrow: boolean): void {
+  private buildEventSpotlight(y: number, width: number, compact: boolean, narrow: boolean, tiny: boolean): void {
     const panelWidth = Math.min(narrow ? 520 : 520, narrow ? width - 28 : width * 0.56);
-    const panelHeight = narrow ? 60 : compact ? 72 : 88;
+    const panelHeight = tiny ? 32 : narrow ? 60 : compact ? 72 : 88;
     const eventRoot = this.add.container(width / 2, y);
     const panel = this.add.graphics();
     panel.fillStyle(0x081733, 0.55).fillRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 12);
     panel.lineStyle(1, 0x7a8fb8, 0.32).strokeRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 12);
     const event = this.getSpotlightEvent();
-    this.eventArt = this.add.image(-panelWidth / 2 + (narrow ? 27 : 48), 0, "battle-atlas", `battle-art-${event.definition.art}`).setDisplaySize(narrow ? 32 : compact ? 46 : 54, narrow ? 32 : compact ? 46 : 54);
-    const textX = -panelWidth / 2 + (narrow ? 51 : 88);
-    this.eventDayLabel = this.add.text(textX, narrow ? -21 : -panelHeight / 2 + 16, `PRÓXIMO EVENTO · DÍA ${this.getSpotlightDay()}`, {
+    this.eventArt = this.add.image(-panelWidth / 2 + (tiny ? 19 : narrow ? 27 : 48), 0, "battle-atlas", `battle-art-${event.definition.art}`).setDisplaySize(tiny ? 20 : narrow ? 32 : compact ? 46 : 54, tiny ? 20 : narrow ? 32 : compact ? 46 : 54);
+    const textX = -panelWidth / 2 + (tiny ? 37 : narrow ? 51 : 88);
+    this.eventDayLabel = this.add.text(textX, tiny ? -10 : narrow ? -21 : -panelHeight / 2 + 16, `PRÓXIMO EVENTO · DÍA ${this.getSpotlightDay()}`, {
       fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: narrow ? "7px" : "9px",
+      fontSize: tiny ? "6px" : narrow ? "7px" : "9px",
       fontStyle: "bold",
       color: "#ffdf8a",
       letterSpacing: 0.7,
     }).setOrigin(0, 0.5);
-    this.eventTitle = this.add.text(textX, narrow ? -6 : -panelHeight / 2 + 36, event.definition.name.toUpperCase(), {
+    this.eventTitle = this.add.text(textX, tiny ? 0 : narrow ? -6 : -panelHeight / 2 + 36, event.definition.name.toUpperCase(), {
       fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: narrow ? "9px" : compact ? "11px" : "13px",
+      fontSize: tiny ? "7px" : narrow ? "9px" : compact ? "11px" : "13px",
       fontStyle: "bold",
       color: "#f8fbff",
-      wordWrap: { width: panelWidth - (narrow ? 65 : 125) },
+      wordWrap: { width: panelWidth - (tiny ? 48 : narrow ? 65 : 125) },
       maxLines: 1,
     }).setOrigin(0, 0.5);
-    this.eventDetail = this.add.text(textX, narrow ? 8 : panelHeight / 2 - 13, event.definition.science, {
+    this.eventDetail = this.add.text(textX, tiny ? 10 : narrow ? 8 : panelHeight / 2 - 13, event.definition.science, {
       fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: narrow ? "7px" : compact ? "9px" : "10px",
+      fontSize: tiny ? "6px" : narrow ? "7px" : compact ? "9px" : "10px",
       color: "#c9d9fa",
-      wordWrap: { width: panelWidth - (narrow ? 65 : 125) },
-      maxLines: narrow ? 1 : 2,
+      wordWrap: { width: panelWidth - (tiny ? 48 : narrow ? 65 : 125) },
+      maxLines: tiny || narrow ? 1 : 2,
       lineSpacing: -1,
     }).setOrigin(0, 0.5);
     this.messagePlate = this.add.graphics();
-    this.messageLabel = this.add.text(0, narrow ? 23 : panelHeight / 2 + 14, this.feedback, {
+    this.messageLabel = this.add.text(0, tiny ? 0 : narrow ? 23 : panelHeight / 2 + 14, this.feedback, {
       fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: narrow ? "7px" : compact ? "10px" : "11px",
+      fontSize: tiny ? "6px" : narrow ? "7px" : compact ? "10px" : "11px",
       fontStyle: "bold",
       color: "#fff2d1",
       align: "center",
-      wordWrap: { width: narrow ? panelWidth - 65 : width - 120 },
-      maxLines: narrow ? 1 : 2,
+      wordWrap: { width: tiny ? panelWidth - 48 : narrow ? panelWidth - 65 : width - 120 },
+      maxLines: tiny || narrow ? 1 : 2,
     }).setOrigin(0.5, 0.5);
+    if (tiny) this.messageLabel.setVisible(false);
     eventRoot.add([panel, this.eventArt, this.eventDayLabel, this.eventTitle, this.eventDetail, this.messagePlate, this.messageLabel]);
     this.uiRoot.add(eventRoot);
   }
@@ -683,7 +695,7 @@ export class GameScene extends Phaser.Scene {
   private updateHeader(): void {
     if (!this.dayLabel || !this.progressDots) return;
     const width = this.screenWidth;
-    this.phaseLabel?.setText(this.phase === "planning" ? (this.paused ? "PAUSA" : "PLANIFICACIÓN") : this.phase === "resolving" ? "RESOLUCIÓN" : "MISIÓN TERMINADA");
+    this.phaseLabel?.setText(this.phase === "intro" ? "MISIÓN" : this.phase === "planning" ? (this.paused ? "PAUSA" : "PLANIFICACIÓN") : this.phase === "resolving" ? "RESOLUCIÓN" : "MISIÓN TERMINADA");
     this.dayLabel.setText(this.phase === "resolving" ? `DÍA ${Math.min(this.state.day, MAX_DAY)} / ${MAX_DAY}` : `DÍA ${this.state.day} / ${MAX_DAY}`);
     this.progressDots.clear();
     const start = width * 0.5 - 79;
@@ -703,9 +715,9 @@ export class GameScene extends Phaser.Scene {
     const isResolving = this.phase === "resolving";
     const left = isResolving ? Math.max(0, RESOLVE_SECONDS - this.resolveElapsed) : this.timerSeconds;
     const max = isResolving ? RESOLVE_SECONDS : PLAN_SECONDS;
-    const text = this.phase === "over" ? "FIN" : this.paused && this.phase === "planning" ? "PAUSA" : `${Math.ceil(left)} s`;
+    const text = this.phase === "intro" ? `${PLAN_SECONDS} s` : this.phase === "over" ? "FIN" : this.paused && this.phase === "planning" ? "PAUSA" : `${Math.ceil(left)} s`;
     this.timerLabel.setText(text);
-    this.timerLabel.setColor(left <= 5 && !this.paused ? "#ff737b" : "#ffe28a");
+    this.timerLabel.setColor(left <= 5 && !this.paused && this.phase === "planning" ? "#ff737b" : "#ffe28a");
     this.timerBar.clear();
     const barWidth = this.narrowLayout ? 46 : 132;
     const x = width - (this.narrowLayout ? 106 : 190);
@@ -965,6 +977,154 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private buildIntroOverlay(): void {
+    if (this.introRoot) return;
+    const width = this.screenWidth;
+    const height = this.screenHeight;
+    const dense = height < 460;
+    const boxWidth = Math.min(this.narrowLayout ? 620 : 690, width - 24);
+    const boxHeight = dense ? height - 16 : Math.min(500, height - 36);
+    const left = width / 2 - boxWidth / 2;
+    const top = height / 2 - boxHeight / 2;
+    const root = this.add.container(0, 0).setDepth(120);
+    this.introRoot = root;
+
+    const shade = this.add.rectangle(width / 2, height / 2, width, height, 0x06102a, 0.78);
+    const panel = this.add.graphics();
+    panel.fillStyle(0x0d1b37, 0.98).fillRoundedRect(left, top, boxWidth, boxHeight, 16);
+    panel.lineStyle(1.5, 0x8493ae, 0.62).strokeRoundedRect(left, top, boxWidth, boxHeight, 16);
+    const accents = [COLORS.gold, COLORS.cyan, 0x7fda8e, COLORS.violet];
+    accents.forEach((color, index) => {
+      panel.fillStyle(color, 0.95).fillRoundedRect(left + 18 + index * 20, top + 13, 14, 3, 1.5);
+    });
+    root.add([shade, panel]);
+
+    const title = this.add.text(width / 2, top + (dense ? 32 : 48), "MISIÓN: SOBREVIVE AL SOL", {
+      fontFamily: 'Impact, "Arial Black", sans-serif',
+      fontSize: dense ? "18px" : "27px",
+      color: "#fff1c5",
+      align: "center",
+    }).setOrigin(0.5);
+    const subtitle = this.add.text(width / 2, top + (dense ? 56 : 82), "Tu colonia frente al Sol. Resiste 15 días espaciales.", {
+      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+      fontSize: dense ? "9px" : "14px",
+      fontStyle: "bold",
+      color: "#d8e2f3",
+      align: "center",
+      wordWrap: { width: boxWidth - 44 },
+    }).setOrigin(0.5);
+    const objective = this.add.text(width / 2, top + (dense ? 82 : 122), "OBJETIVO  ·  Mantén las cuatro barras entre 1% y 99% hasta el día 15. Si una termina en 0% o 100%, tu colonia colapsa.", {
+      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+      fontSize: dense ? "9px" : "12px",
+      color: "#eef2f8",
+      align: "center",
+      wordWrap: { width: boxWidth - 48 },
+      lineSpacing: -1,
+    }).setOrigin(0.5);
+    root.add([title, subtitle, objective]);
+
+    const chipTop = top + (dense ? 113 : 167);
+    const chipHeight = dense ? 25 : 34;
+    const chipGapX = 10;
+    const chipGapY = dense ? 5 : 7;
+    const chipWidth = (boxWidth - 42 - chipGapX) / 2;
+    SYSTEMS.forEach((system, index) => {
+      const col = index % 2;
+      const row = Math.floor(index / 2);
+      const x = width / 2 - chipWidth - chipGapX / 2 + col * (chipWidth + chipGapX);
+      const y = chipTop + row * (chipHeight + chipGapY);
+      const chip = this.add.graphics();
+      chip.fillStyle(system.color, 0.12).fillRoundedRect(x, y, chipWidth, chipHeight, 7);
+      chip.lineStyle(1, system.color, 0.36).strokeRoundedRect(x, y, chipWidth, chipHeight, 7);
+      const icon = this.add.image(x + (dense ? 14 : 18), y + chipHeight / 2, "system-icon-atlas", `system-icon-${system.icon}`)
+        .setDisplaySize(dense ? 17 : 21, dense ? 17 : 21);
+      const name = this.add.text(x + (dense ? 29 : 38), y + chipHeight / 2, system.name.toUpperCase(), {
+        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+        fontSize: dense ? "8px" : "11px",
+        fontStyle: "bold",
+        color: "#eaf0fa",
+      }).setOrigin(0, 0.5);
+      const value = this.add.text(x + chipWidth - 10, y + chipHeight / 2, "50%", {
+        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+        fontSize: dense ? "9px" : "12px",
+        fontStyle: "bold",
+        color: Phaser.Display.Color.IntegerToColor(system.color).rgba,
+      }).setOrigin(1, 0.5);
+      root.add([chip, icon, name, value]);
+    });
+
+    const howY = top + (dense ? 178 : 253);
+    const howTitle = this.add.text(left + 22, howY, "CÓMO SE JUEGA", {
+      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+      fontSize: dense ? "9px" : "12px",
+      fontStyle: "bold",
+      color: "#f3d77e",
+      letterSpacing: 0.4,
+    }).setOrigin(0, 0.5);
+    root.add(howTitle);
+    const steps = [
+      "Mano inicial: 3 de supervivencia y 2 ataques. Usa hasta 3 PA para tu base o contra la IA.",
+      "Verde ↑ sube, rojo ↓ baja. Reserva 1 PA para recibir la mitad del daño.",
+      "Ataca, juega supervivencia y aplica el evento NASA cada 3 días. Desgaste desde D2; reabastecimiento: elige barra (+20%).",
+    ];
+    const stepColors = [COLORS.cyan, COLORS.gold, COLORS.violet];
+    const stepTop = top + (dense ? 197 : 278);
+    const stepGap = dense ? 25 : 39;
+    steps.forEach((text, index) => {
+      const y = stepTop + index * stepGap;
+      const number = this.add.circle(left + 31, y, dense ? 9 : 11, stepColors[index], 0.94);
+      const numberText = this.add.text(left + 31, y, `${index + 1}`, {
+        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+        fontSize: dense ? "8px" : "10px",
+        fontStyle: "bold",
+        color: "#13213e",
+      }).setOrigin(0.5);
+      const body = this.add.text(left + 49, y, text, {
+        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+        fontSize: dense ? "8px" : "11px",
+        color: "#e2e9f4",
+        wordWrap: { width: boxWidth - 78 },
+        maxLines: dense ? 1 : 2,
+      }).setOrigin(0, 0.5);
+      root.add([number, numberText, body]);
+    });
+
+    const buttonY = top + (dense ? 327 : 433);
+    this.introButton = new CanvasButton(this, width / 2, buttonY, Math.min(dense ? 250 : 290, boxWidth - 48), dense ? 38 : 48, "INICIAR DÍA 1", () => this.startMission(), {
+      fill: 0xf3c64b,
+      hover: 0xffd76a,
+      stroke: 0xffedb0,
+      text: "#172447",
+    }, dense ? 12 : 16);
+    const timerNote = this.add.text(width / 2, top + (dense ? 361 : 474), "El reloj de planificación de 15 s comienza al pulsar este botón.", {
+      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+      fontSize: dense ? "7px" : "9px",
+      color: "#aebbd1",
+      align: "center",
+    }).setOrigin(0.5);
+    root.add([this.introButton.container, timerNote]);
+    this.uiRoot.add(root);
+  }
+
+  private startMission(): void {
+    if (this.phase !== "intro") return;
+    this.introButton?.destroy();
+    this.introButton = undefined;
+    if (this.introRoot?.active) this.introRoot.destroy(true);
+    this.introRoot = undefined;
+    this.phase = "planning";
+    this.paused = false;
+    this.timerSeconds = PLAN_SECONDS;
+    this.pauseButton?.setEnabled(true);
+    this.feedback = "Elige cartas (3 PA), revisa las barras y resuelve el turno.";
+    this.feedbackColor = COLORS.cream;
+    this.updateHeader();
+    this.updateActionPanel();
+    this.updateEventSpotlight();
+    this.refreshBoard();
+    this.animateCardsIn();
+  }
+
   private buildOutcomeOverlay(): void {
     if (!this.state.outcome) return;
     const shade = this.add.rectangle(this.screenWidth / 2, this.screenHeight / 2, this.screenWidth, this.screenHeight, 0x03091a, 0.78).setDepth(160);
@@ -995,7 +1155,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private restart(): void {
-    this.phase = "planning";
+    this.phase = "intro";
     this.state = createGame("solo", Date.now());
     this.plans = [emptyPlan(), emptyPlan()];
     this.timerSeconds = PLAN_SECONDS;
@@ -1004,10 +1164,10 @@ export class GameScene extends Phaser.Scene {
     this.pendingState = null;
     this.pendingApplied = false;
     this.hoveredUid = undefined;
+    this.handPage = 0;
     this.feedback = "Elige cartas (3 PA), revisa las barras y resuelve el turno.";
     this.feedbackColor = COLORS.cream;
     this.buildInterface();
-    this.animateCardsIn();
   }
 
   private getSpotlightDay(): number {

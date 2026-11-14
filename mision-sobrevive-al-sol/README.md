@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-Abrir `http://127.0.0.1:5173/game.html` para iniciar la escena jugable. La página raíz queda disponible para la vista de catálogo independiente. Para validar el prototipo:
+Abrir `http://127.0.0.1:5173/game.html` para iniciar la escena jugable. La portada explica el objetivo y los pasos; el reloj de 15 segundos comienza al pulsar «Iniciar día 1». La página raíz queda disponible para la vista de catálogo independiente. Para validar el prototipo:
 
 ```bash
 npm test
