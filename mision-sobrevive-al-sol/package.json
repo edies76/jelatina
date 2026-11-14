@@ -1,0 +1,21 @@
+{
+  "name": "mision-sobrevive-al-sol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:game": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit -p tsconfig.game.json && vite build --config vite.game.config.ts",
+    "test": "vitest run",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "phaser": "3.90.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0",
+    "vitest": "^5.1.0"
+  }
+}
