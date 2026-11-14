@@ -67,6 +67,7 @@ export class GameScene extends Phaser.Scene {
   private ui!: Phaser.GameObjects.Container;
   private cards: SurvivalCard[] = [];
   private resourceUi: ResourceUi[] = [];
+  private stepUi: Array<{ graphics: Phaser.GameObjects.Graphics; label: Phaser.GameObjects.Text }> = [];
   private buttons: Array<{ container: Phaser.GameObjects.Container; setEnabled: (enabled: boolean) => void; setText: (text: string) => void; setActive: (active: boolean) => void }> = [];
   private paLabel?: Phaser.GameObjects.Text;
   private statusLabel?: Phaser.GameObjects.Text;
@@ -181,6 +182,7 @@ export class GameScene extends Phaser.Scene {
     this.ui = this.add.container(0, 0).setDepth(1);
     this.cards = [];
     this.resourceUi = [];
+    this.stepUi = [];
     this.buttons = [];
     this.planButton = undefined;
     this.shieldButton = undefined;
@@ -266,6 +268,7 @@ export class GameScene extends Phaser.Scene {
     const compact = this.mobile;
     const margin = compact ? 14 : Math.max(32, w * 0.055);
     this.drawHeader(w, compact);
+    this.drawSteps(w, compact);
     this.drawEventBar(w, margin, compact);
     this.drawColonies(w, margin, compact);
     this.drawHand(w, h, margin, compact);
@@ -278,7 +281,7 @@ export class GameScene extends Phaser.Scene {
   private drawHeader(w: number, compact: boolean): void {
     const y = compact ? 27 : 33;
     this.text(24, y, "MISIÓN", compact ? 14 : 17, C.text, true, 160, "left");
-    this.text(24, y + 17, "SOBREVIVE AL SOL", compact ? 8 : 9, C.cyan, true, 170, "left");
+    this.text(24, y + 17, this.state.mode === "multiplayer" ? "ÚLTIMA EN PIE GANA" : "SOBREVIVE 15 DÍAS", compact ? 7 : 8, C.cyan, true, 190, "left");
     this.text(w / 2, y, "RONDA " + this.pad(this.state.day) + (this.state.mode === "solo" ? " / 15" : ""), compact ? 15 : 19, C.text, true);
     const alive = this.state.players.filter((p) => !p.colony.eliminated).length;
     this.text(w - 205, y, alive + " COLONIAS VIVAS", compact ? 9 : 10, C.muted, true, 136, "right");
@@ -293,7 +296,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawEventBar(w: number, margin: number, compact: boolean): void {
-    const y = compact ? 92 : 107;
+    const y = compact ? 92 : 131;
     const height = compact ? 52 : 58;
     const event = getEventForDay(this.state);
     this.panel(w / 2, y, w - margin * 2, height, 0.96, C.panel);
@@ -319,11 +322,48 @@ export class GameScene extends Phaser.Scene {
     this.text(w - margin - 14, y + 9, choiceText, compact ? 8 : 10, C.muted, true, w * 0.34, "right");
   }
 
+  private drawSteps(w: number, compact: boolean): void {
+    if (compact) return;
+    const labels = ["1  ELIGE CARTAS", "2  REVISA PRONÓSTICO", "3  CONFIRMA RONDA"];
+    const gap = 9;
+    const chipW = Math.min(230, (w - 60 - gap * 2) / 3);
+    const chipH = 22;
+    const left = w / 2 - (chipW * 3 + gap * 2) / 2;
+    labels.forEach((label, index) => {
+      const x = left + index * (chipW + gap) + chipW / 2;
+      const y = 89;
+      const graphics = this.add.graphics();
+      const text = this.add.text(x, y, label, {
+        fontFamily: FONT, fontSize: "9px", fontStyle: "bold", color: "#596779", align: "center",
+      }).setOrigin(0.5);
+      this.ui.add([graphics, text]);
+      this.stepUi.push({ graphics, label: text });
+    });
+    this.updateStepUi();
+  }
+
+  private updateStepUi(): void {
+    if (!this.stepUi.length) return;
+    const hasPlan = this.plans[0].survival.length > 0 || this.plans[0].reserveShield;
+    const activeStep = this.phase === "resolving" || this.locked ? 2 : hasPlan ? 1 : 0;
+    this.stepUi.forEach((step, index) => {
+      const width = Math.min(230, (this.scale.width - 60 - 18) / 3);
+      const gap = 9;
+      const x = this.scale.width / 2 - (width * 3 + gap * 2) / 2 + index * (width + gap);
+      const active = index === activeStep;
+      const complete = index < activeStep;
+      step.graphics.clear();
+      step.graphics.fillStyle(active ? 0xf8f6f0 : complete ? 0xe2ebe3 : 0xe7e2d7, 1).fillRoundedRect(x, 78, width, 22, 6);
+      step.graphics.lineStyle(active ? 1.5 : 1, active ? C.gold : complete ? C.green : C.line, active ? 0.95 : 0.58).strokeRoundedRect(x + 0.5, 78.5, width - 1, 21, 6);
+      step.label.setPosition(x + width / 2, 89).setColor(active ? "#172338" : complete ? "#347b68" : "#596779");
+    });
+  }
+
   private drawColonies(w: number, margin: number, compact: boolean): void {
     const players = this.state.players;
     const columns = w < 620 ? 1 : 2;
     const rows = Math.ceil(players.length / columns);
-    const top = compact ? 136 : 167;
+    const top = compact ? 136 : 174;
     const gapX = 10, gapY = compact ? 6 : 8;
     const cellW = (w - margin * 2 - gapX * (columns - 1)) / columns;
     const areaH = compact ? Math.min(225, this.scale.height * 0.32) : players.length <= 2 ? 112 : 160;
@@ -373,7 +413,7 @@ export class GameScene extends Phaser.Scene {
 
   private drawHand(w: number, h: number, margin: number, compact: boolean): void {
     const y = h - (compact ? 228 : 240);
-    this.text(margin + 2, y - 20, "TU MANO", compact ? 9 : 10, C.text, true, 90, "left");
+    this.text(margin + 2, y - 20, compact ? "ELIGE CARTAS" : "ELIGE HASTA 3 PA", compact ? 9 : 10, C.text, true, 150, "left");
     this.paLabel = this.add.text(w - margin, y - 20, "", { fontFamily: FONT, fontSize: compact ? "9px" : "10px", fontStyle: "bold", color: "#f0bd58" }).setOrigin(1, 0.5);
     this.ui.add(this.paLabel);
     const hand = this.state.players[0].survivalHand;
@@ -421,7 +461,7 @@ export class GameScene extends Phaser.Scene {
     const shieldX = w / 2 - totalW / 2 + shieldW / 2;
     const primaryX = shieldX + shieldW / 2 + gap + primaryW / 2;
     this.shieldButton = this.makeButton(shieldX, y, shieldW, compact ? 38 : 42, "MITAD DE IMPACTO Y DESGASTE · 1 PA", () => this.toggleShield(), "secondary", compact);
-    this.planButton = this.makeButton(primaryX, y, primaryW, compact ? 40 : 44, this.online ? "CONFIRMAR PLAN" : "JUGAR RONDA", () => this.confirmPlan(), "primary", compact);
+    this.planButton = this.makeButton(primaryX, y, primaryW, compact ? 40 : 44, this.online ? "CONFIRMAR PLAN" : "CONFIRMAR Y JUGAR", () => this.confirmPlan(), "primary", compact);
     const drop = this.add.zone(primaryX, y, primaryW, 48).setRectangleDropZone(primaryW, 48);
     drop.setDepth(2);
     this.ui.add(drop);
@@ -470,12 +510,12 @@ export class GameScene extends Phaser.Scene {
       const g = entry.graphics;
       g.clear();
       const left = entry.x - entry.width / 2;
-      g.fillStyle(0xd3d0c7, 0.95).fillRoundedRect(left, entry.y + 3, entry.width, 5, 2.5);
-      g.fillStyle(color, 0.95).fillRoundedRect(left, entry.y + 3, entry.width * clamped / 100, 5, 2.5);
+      g.fillStyle(0xd3d0c7, 0.95).fillRoundedRect(left, entry.y + 3, entry.width, 7, 3.5);
+      g.fillStyle(color, 0.98).fillRoundedRect(left, entry.y + 3, entry.width * clamped / 100, 7, 3.5);
       if (delta !== 0) {
         const from = left + entry.width * clamped / 100;
         const to = left + entry.width * shown / 100;
-        g.fillStyle(collapse ? C.red : delta > 0 ? C.green : C.red, 0.9).fillRoundedRect(Math.min(from, to), entry.y + 3, Math.max(2, Math.abs(to - from)), 5, 2.5);
+        g.fillStyle(collapse ? C.red : delta > 0 ? C.green : C.red, 0.96).fillRoundedRect(Math.min(from, to), entry.y + 3, Math.max(2, Math.abs(to - from)), 7, 3.5);
       }
       entry.value.setText(Math.round(start) + "%").setColor(player.colony.eliminated ? "#87909a" : collapse ? "#b95756" : "#172338");
       if (entry.playerIndex === 0 && this.phase === "planning" && (delta !== 0 || this.hoverUid)) {
@@ -489,7 +529,7 @@ export class GameScene extends Phaser.Scene {
   private updatePlanControls(): void {
     if (!this.paLabel) return;
     const used = planCost(this.state.players[0], this.plans[0]);
-    this.paLabel.setText(Math.max(0, ACTION_POINTS - used) + " / " + ACTION_POINTS + " PA");
+    this.paLabel.setText("PA RESTANTES  " + Math.max(0, ACTION_POINTS - used) + "/" + ACTION_POINTS);
     this.cards.forEach((card) => card.setSelected(isCardSelected(this.plans[0], card.instance.uid)));
     this.cards.forEach((card) => card.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated));
     this.shieldButton?.setActive(this.plans[0].reserveShield);
@@ -497,7 +537,8 @@ export class GameScene extends Phaser.Scene {
     this.shieldButton?.setEnabled(this.phase === "planning" && !this.locked);
     const needsTarget = Boolean(getEventForDay(this.state)?.definition.choice) && !this.plans[0].globalTargetChosen;
     this.planButton?.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated && !needsTarget);
-    this.planButton?.setText(this.locked ? "ESPERANDO…" : this.online ? "CONFIRMAR PLAN" : "JUGAR RONDA");
+    this.planButton?.setText(this.phase === "resolving" ? "RESOLVIENDO…" : this.locked ? "PLAN ENVIADO · ESPERANDO" : this.online ? "CONFIRMAR PLAN" : "CONFIRMAR Y JUGAR");
+    this.updateStepUi();
   }
 
   private updateTimer(): void {
@@ -659,7 +700,7 @@ export class GameScene extends Phaser.Scene {
   private panel(x: number, y: number, width: number, height: number, alpha = 0.8, color = C.panel): Phaser.GameObjects.Graphics {
     const g = this.add.graphics();
     g.fillStyle(color, alpha).fillRoundedRect(x - width / 2, y - height / 2, width, height, 11);
-    g.lineStyle(1, 0x687b94, 0.22).strokeRoundedRect(x - width / 2, y - height / 2, width, height, 11);
+    g.lineStyle(1.5, 0x536477, 0.58).strokeRoundedRect(x - width / 2, y - height / 2, width, height, 9);
     this.ui.add(g);
     return g;
   }
@@ -685,8 +726,8 @@ export class GameScene extends Phaser.Scene {
     if (this.phase === "resolving") return "MEJORAS → EVENTO GLOBAL → DESGASTE";
     if (this.online && this.readyText) return this.readyText;
     if (this.phase === "planning") return this.online
-      ? "Planes secretos · confirma para revelar la ronda."
-      : "Toca una carta: mira cómo quedarían las cuatro barras.";
+      ? "Tu plan es secreto · confirma para revelar la ronda."
+      : "1. Elige cartas   2. Revisa las flechas   3. Juega la ronda.";
     return this.banner || "Elige cartas para proteger tu colonia.";
   }
 

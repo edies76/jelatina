@@ -167,13 +167,16 @@ export class SurvivalCard {
     const accent = familyInk[this.instance.definition.family] || 0x39709a;
     this.plate.clear();
     this.plate.fillStyle(0x172338, 0.08).fillRoundedRect(x + 1, y + 2, this.width, this.height, 8);
-    this.plate.fillStyle(this.selected ? 0xfffaf1 : 0xf8f6f0, 1).fillRoundedRect(x, y, this.width, this.height, 8);
-    this.plate.lineStyle(this.selected ? 2 : 1, this.selected ? 0xba674f : 0x768397, this.selected ? 0.95 : 0.58)
+    this.plate.fillStyle(this.selected ? 0xf2e2db : 0xf8f6f0, 1).fillRoundedRect(x, y, this.width, this.height, 8);
+    this.plate.lineStyle(this.selected ? 3 : 1.5, this.selected ? 0xba674f : 0x768397, this.selected ? 1 : 0.72)
       .strokeRoundedRect(x + 0.5, y + 0.5, this.width - 1, this.height - 1, 8);
     this.plate.lineStyle(2, accent, this.selected ? 0.95 : 0.62)
       .lineBetween(x + 10, y + 32, x + this.width - 10, y + 32);
     this.plate.lineStyle(1, 0x768397, 0.35)
       .lineBetween(x + 11, y + this.height - 36, x + this.width - 11, y + this.height - 36);
-    this.cost.setColor(this.selected ? "#ba674f" : "#172338");
+    this.cost.setText(this.selected
+      ? (this.width < 150 ? "✓ " : "✓ EN PLAN · ") + this.instance.definition.cost + " PA"
+      : this.instance.definition.cost + " PA");
+    this.cost.setColor(this.selected ? "#9f5746" : "#172338");
   }
 }
