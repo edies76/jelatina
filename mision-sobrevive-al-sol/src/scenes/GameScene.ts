@@ -206,10 +206,10 @@ export class GameScene extends Phaser.Scene {
     this.text(w / 2, h / 2 - boxH * 0.37, "MISIÓN: SOBREVIVE AL SOL", small ? 20 : 30, C.text, true, 620);
     this.text(w / 2, h / 2 - boxH * 0.23, "Cada ronda protege tu colonia. La última que siga en pie gana.", small ? 11 : 14, C.muted, false, boxW - 48);
     const rules = [
-      "Cuida energía, O₂/agua, comida y escudo.",
-      "Juega mejoras usando hasta 3 puntos de acción.",
-      "Cada 3 rondas hay un evento global; también hay desgaste.",
-      "Una barra en 0% o 100% elimina. Tras el día 15, sigue hasta que quede una.",
+      "Elige mejoras de tu mano: puedes gastar hasta 3 PA.",
+      "La flecha en cada barra muestra el valor al confirmar.",
+      "El escudo cuesta 1 PA y reduce a la mitad evento y desgaste.",
+      "Una barra en 0% o 100% elimina. En multijugador gana la última colonia viva.",
     ];
     const top = h / 2 - boxH / 2;
     const startY = top + (small ? 96 : 135);
@@ -375,6 +375,7 @@ export class GameScene extends Phaser.Scene {
       const own = index === 0;
       this.panel(x, y, cellW, cellH, player.colony.eliminated ? 0.55 : 0.98, own ? 0xe7e2d7 : C.panel);
       this.text(x - cellW / 2 + 11, y - cellH / 2 + 12, player.colony.eliminated ? "COLONIA ELIMINADA" : own ? "TU COLONIA" : player.name.toUpperCase(), compact ? 8 : 9, player.colony.eliminated ? C.red : own ? C.cyan : C.muted, true, cellW * 0.42, "left");
+      if (own) this.text(x + cellW / 2 - 12, y - cellH / 2 + 12, "AHORA → AL CONFIRMAR", compact ? 7 : 8, C.muted, true, cellW * 0.45, "right");
       const alert = Object.values(player.colony.resources).some((value) => value < 25 || value > 75);
       if (alert && !player.colony.eliminated) this.text(x + cellW / 2 - 12, y - cellH / 2 + 12, "ALERTA", compact ? 7 : 8, C.red, true, 54, "right");
       const valuesTop = y - cellH / 2 + (cellH < 90 ? 35 : cellH * 0.52);
@@ -413,7 +414,8 @@ export class GameScene extends Phaser.Scene {
 
   private drawHand(w: number, h: number, margin: number, compact: boolean): void {
     const y = h - (compact ? 228 : 240);
-    this.text(margin + 2, y - 20, compact ? "ELIGE CARTAS" : "ELIGE HASTA 3 PA", compact ? 9 : 10, C.text, true, 150, "left");
+    this.text(w / 2, y - 51, compact ? "Toca carta para elegir · barra para ver resultado" : "TOCA UNA CARTA PARA AÑADIRLA · LOS EFECTOS SE VEN EN LAS BARRAS", compact ? 8 : 9, C.muted, true, w - margin * 2);
+    this.text(margin + 2, y - 20, compact ? "TUS CARTAS" : "TU PLAN", compact ? 9 : 10, C.text, true, 100, "left");
     this.paLabel = this.add.text(w - margin, y - 20, "", { fontFamily: FONT, fontSize: compact ? "9px" : "10px", fontStyle: "bold", color: "#f0bd58" }).setOrigin(1, 0.5);
     this.ui.add(this.paLabel);
     const hand = this.state.players[0].survivalHand;
@@ -460,7 +462,7 @@ export class GameScene extends Phaser.Scene {
     const totalW = shieldW + primaryW + gap;
     const shieldX = w / 2 - totalW / 2 + shieldW / 2;
     const primaryX = shieldX + shieldW / 2 + gap + primaryW / 2;
-    this.shieldButton = this.makeButton(shieldX, y, shieldW, compact ? 38 : 42, "MITAD DE IMPACTO Y DESGASTE · 1 PA", () => this.toggleShield(), "secondary", compact);
+    this.shieldButton = this.makeButton(shieldX, y, shieldW, compact ? 40 : 44, "ESCUDO · 1 PA\n−50% EVENTO Y DESGASTE", () => this.toggleShield(), "secondary", compact);
     this.planButton = this.makeButton(primaryX, y, primaryW, compact ? 40 : 44, this.online ? "CONFIRMAR PLAN" : "CONFIRMAR Y JUGAR", () => this.confirmPlan(), "primary", compact);
     const drop = this.add.zone(primaryX, y, primaryW, 48).setRectangleDropZone(primaryW, 48);
     drop.setDepth(2);
@@ -529,11 +531,11 @@ export class GameScene extends Phaser.Scene {
   private updatePlanControls(): void {
     if (!this.paLabel) return;
     const used = planCost(this.state.players[0], this.plans[0]);
-    this.paLabel.setText("PA RESTANTES  " + Math.max(0, ACTION_POINTS - used) + "/" + ACTION_POINTS);
+    this.paLabel.setText("PUNTOS DE ACCIÓN  " + Math.max(0, ACTION_POINTS - used) + "/" + ACTION_POINTS);
     this.cards.forEach((card) => card.setSelected(isCardSelected(this.plans[0], card.instance.uid)));
     this.cards.forEach((card) => card.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated));
     this.shieldButton?.setActive(this.plans[0].reserveShield);
-    this.shieldButton?.setText(this.plans[0].reserveShield ? "ACTIVO · −50% · EVENTO Y DESGASTE" : "MITAD DE IMPACTO Y DESGASTE · 1 PA");
+    this.shieldButton?.setText(this.plans[0].reserveShield ? "ESCUDO ACTIVADO\n−50% EVENTO Y DESGASTE" : "ESCUDO · 1 PA\n−50% EVENTO Y DESGASTE");
     this.shieldButton?.setEnabled(this.phase === "planning" && !this.locked);
     const needsTarget = Boolean(getEventForDay(this.state)?.definition.choice) && !this.plans[0].globalTargetChosen;
     this.planButton?.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated && !needsTarget);
@@ -726,9 +728,9 @@ export class GameScene extends Phaser.Scene {
     if (this.phase === "resolving") return "MEJORAS → EVENTO GLOBAL → DESGASTE";
     if (this.online && this.readyText) return this.readyText;
     if (this.phase === "planning") return this.online
-      ? "Tu plan es secreto · confirma para revelar la ronda."
-      : "1. Elige cartas   2. Revisa las flechas   3. Juega la ronda.";
-    return this.banner || "Elige cartas para proteger tu colonia.";
+      ? "PLANES SECRETOS · CONFIRMA PARA REVELARLOS."
+      : "EQUILIBRA TUS BARRAS PARA SOBREVIVIR AL PRÓXIMO EVENTO.";
+    return this.banner || "La última colonia viva gana.";
   }
 
   private showBanner(message: string, ms = 1700): void {
