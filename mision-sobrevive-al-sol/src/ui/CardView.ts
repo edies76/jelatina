@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { FAMILIES, SYSTEMS, type AttackCardDefinition, type CardInstance, type Effects, type SurvivalCardDefinition, type SystemId } from "../data";
+import { FAMILIES, SYSTEMS, type CardInstance, type Effects, type SystemId } from "../data";
 
 export interface CardViewEvents {
   onToggle: (card: CardInstance) => void;
@@ -39,7 +39,6 @@ export class CardView {
     width: number,
     height: number,
     survivalAtlas: string,
-    attackAtlas: string,
     events: CardViewEvents,
     depth = 20,
   ) {
@@ -53,15 +52,12 @@ export class CardView {
     this.graphics = scene.add.graphics();
 
     const definition = card.definition;
-    const attackDefinition = card.kind === "attack" ? definition as AttackCardDefinition : null;
-    const survivalDefinition = card.kind === "survival" ? definition as SurvivalCardDefinition : null;
-    const family = attackDefinition ? FAMILIES.attack : FAMILIES[survivalDefinition!.family];
-    const atlas = card.kind === "attack" ? attackAtlas : survivalAtlas;
-    const frame = `${card.kind === "attack" ? "battle-art" : "survival-art"}-${definition.art}`;
+    const family = FAMILIES[definition.family];
+    const frame = `survival-art-${definition.art}`;
     const top = -height / 2;
     const tight = height < 175;
     const artHeight = height * (tight ? 0.28 : 0.36);
-    this.art = scene.add.image(0, top + height * (tight ? 0.53 : 0.52), atlas, frame)
+    this.art = scene.add.image(0, top + height * (tight ? 0.53 : 0.52), survivalAtlas, frame)
       .setDisplaySize(width - 25, artHeight)
       .setOrigin(0.5);
 
@@ -73,7 +69,7 @@ export class CardView {
       align: "center",
       lineSpacing: -4,
     }).setOrigin(0.5);
-    const typeText = scene.add.text(width / 2 - 9, top + 18, card.kind === "attack" ? "ATAQUE" : family.name, {
+    const typeText = scene.add.text(width / 2 - 9, top + 18, family.name, {
       fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
       fontSize: width < 205 ? "8px" : "9px",
       fontStyle: "bold",
@@ -91,7 +87,7 @@ export class CardView {
       lineSpacing: -2,
     }).setOrigin(0.5, 0);
 
-    this.effectsText = scene.add.text(0, height / 2 - (tight ? 50 : 56), this.formatEffects(definition.effects, attackDefinition?.selfCost), {
+    this.effectsText = scene.add.text(0, height / 2 - (tight ? 50 : 56), this.formatEffects(definition.effects), {
       fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
       fontSize: width < 205 ? "10px" : "11px",
       fontStyle: "bold",
@@ -148,24 +144,18 @@ export class CardView {
     this.container.destroy(true);
   }
 
-  private formatEffects(effects: Effects, selfCost?: Effects): string {
+  private formatEffects(effects: Effects): string {
     const rows = Object.entries(effects)
       .filter(([, amount]) => Boolean(amount))
       .map(([system, amount]) => `${signed(amount!)} ${SYSTEMS.find((item) => item.id === system)?.label}`);
-    if (selfCost) {
-      const self = Object.entries(selfCost)
-        .filter(([, amount]) => Boolean(amount))
-        .map(([system, amount]) => `${signed(amount!)} ${SYSTEMS.find((item) => item.id === system)?.label}`);
-      if (self.length) rows.push(`TÚ: ${self.join(" · ")}`);
-    }
     const parts = rows.slice(0, 4);
     const output = parts.join("\n");
-    return output || (this.card.kind === "attack" ? "Oculta telemetría 1 día" : "Sin cambios");
+    return output || "Sin cambios";
   }
 
   private redraw(): void {
     const definition = this.card.definition;
-    const family = this.card.kind === "attack" ? FAMILIES.attack : FAMILIES[(definition as SurvivalCardDefinition).family];
+    const family = FAMILIES[definition.family];
     const x = -this.width / 2;
     const y = -this.height / 2;
     const radius = 15;

@@ -5,6 +5,8 @@
     "src/game-rules.ts",
     "src/data.ts",
     "src/scenes/**/*.ts",
-    "src/ui/**/*.ts"
+    "src/ui/**/*.ts",
+    "src/network/**/*.ts",
+    "server/**/*.ts"
   ]
 }

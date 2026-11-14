@@ -10,6 +10,19 @@
   <body>
     <div id="game-container" aria-label="Misión: Sobrevive al Sol, juego de cartas espacial"></div>
     <div id="loading-screen" role="status">CARGANDO MISIÓN…</div>
+    <section id="room-code-sheet" aria-labelledby="room-code-title" aria-modal="true" role="dialog">
+      <form id="room-code-form">
+        <h1 id="room-code-title">Unirse a una sala</h1>
+        <p>Escribe el código de 5 letras que te compartieron.</p>
+        <label for="room-code-input">Código de sala</label>
+        <input id="room-code-input" name="code" autocomplete="off" autocapitalize="characters" maxlength="5" inputmode="text" placeholder="ABCDE" />
+        <span id="room-code-error" role="alert"></span>
+        <div class="room-sheet-actions">
+          <button type="button" data-close-room>VOLVER</button>
+          <button type="submit">UNIRME</button>
+        </div>
+      </form>
+    </section>
     <script type="module" src="/src/game-entry.ts"></script>
   </body>
 </html>

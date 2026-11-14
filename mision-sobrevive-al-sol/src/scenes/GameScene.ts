@@ -1,16 +1,13 @@
 import Phaser from "phaser";
 import {
   ACTION_POINTS,
-  EFFECTS_ATLAS,
+  EVENTS_ATLAS,
   ICONS_ATLAS,
-  MAX_DAY,
   PLAN_SECONDS,
   RESOLVE_SECONDS,
-  SYSTEMS,
   SURVIVAL_ATLAS,
-  ATTACKS_ATLAS,
+  SYSTEMS,
   type CardInstance,
-  type AttackCardDefinition,
   type Effects,
   type SystemId,
 } from "../data";
@@ -19,1173 +16,826 @@ import {
   createGame,
   emptyPlan,
   getEventForDay,
-  getCard,
   isCardSelected,
   planCost,
   previewPlan,
   resolveRound,
   toggleEmergencyShield,
   togglePlanCard,
+  wearForDay,
   type GameState,
   type RoundPlan,
 } from "../game-rules";
-import { CardView } from "../ui/CardView";
-import { CanvasButton } from "../ui/CanvasButton";
-import { ColonyPanel } from "../ui/ColonyPanel";
+import { RoomClient } from "../network/RoomClient";
+import type { ClientRoomMessage, ServerRoomMessage } from "../network/protocol";
+import { SurvivalCard } from "../ui/SurvivalCard";
 
-type LayeredParticle = {
-  object: Phaser.GameObjects.Arc;
-  x: number;
-  y: number;
-  radius: number;
-  speed: number;
-  alpha: number;
-  phase: number;
-  amplitude: number;
-};
+type Phase = "intro" | "connecting" | "waiting" | "planning" | "resolving" | "over";
+type Star = { object: Phaser.GameObjects.Arc; speed: number; baseY: number; offset: number };
+type ResourceUi = { graphics: Phaser.GameObjects.Graphics; value: Phaser.GameObjects.Text; preview: Phaser.GameObjects.Text; x: number; y: number; width: number; playerIndex: number; system: SystemId };
 
-const COLORS = {
-  ink: 0x07132e,
-  navy: 0x0c1b3b,
-  panel: 0x0d1d3f,
-  cream: 0xfff4dc,
-  gold: 0xffc149,
-  cyan: 0x45dff3,
-  mint: 0x75efb1,
-  coral: 0xff6c76,
-  violet: 0xad8bff,
-  white: 0xfffbef,
+const C = {
+  bg: 0x081328, panel: 0x101f39, panel2: 0x142642, line: 0x2a3d5b,
+  text: 0xf3f5f7, muted: 0x9cacc2, gold: 0xf0bd58, green: 0x6cdaa0,
+  red: 0xf17d7a, cyan: 0x65cbd7, violet: 0xb69ae8, white: 0xffffff,
 };
+const FONT = '"Trebuchet MS", Arial, sans-serif';
+const SYSTEMS_COLOR: Record<SystemId, number> = { energy: C.gold, oxygen: C.cyan, food: C.green, shield: C.violet };
+const SYSTEMS_SHORT: Record<SystemId, string> = { energy: "ENERGÍA", oxygen: "O₂ / AGUA", food: "COMIDA", shield: "ESCUDO" };
+const marginSafe = (width: number): number => width < 620 ? width - 28 : width - 48;
 
 export class GameScene extends Phaser.Scene {
-  private state!: GameState;
-  private plans: [RoundPlan, RoundPlan] = [emptyPlan(), emptyPlan()];
-  private phase: "intro" | "planning" | "resolving" | "over" = "intro";
-  private timerSeconds = PLAN_SECONDS;
-  private paused = false;
-  private resolveElapsed = 0;
+  private state: GameState = createGame("solo");
+  private plans: RoundPlan[] = [emptyPlan(), emptyPlan()];
+  private phase: Phase = "intro";
+  private roomClient?: RoomClient;
+  private roomCode = "";
+  private roomPlayerIndex: number | null = null;
+  private roomCount = 0;
+  private online = false;
+  private locked = false;
+  private readyText = "";
+  private deadline = 0;
+  private timer = PLAN_SECONDS;
+  private banner = "";
+  private bannerUntil = 0;
+  private currentEventTarget: SystemId | null = null;
   private pendingState: GameState | null = null;
-  private pendingApplied = false;
-  private hoveredUid: string | undefined;
-  private feedback = "Elige cartas (3 PA), revisa las barras y resuelve el turno.";
-  private feedbackColor = COLORS.cream;
-  private screenWidth = 1280;
-  private screenHeight = 720;
-  private narrowLayout = false;
-  private background!: Phaser.GameObjects.Image;
-  private backgroundShade!: Phaser.GameObjects.Rectangle;
-  private foreground!: Phaser.GameObjects.Graphics;
-  private stars: LayeredParticle[] = [];
-  private uiRoot!: Phaser.GameObjects.Container;
-  private introRoot?: Phaser.GameObjects.Container;
-  private introButton?: CanvasButton;
-  private colonyPanels: ColonyPanel[] = [];
-  private cardViews: CardView[] = [];
-  private cardViewsByUid = new Map<string, CardView>();
-  private handPage = 0;
-  private handPageButtons: CanvasButton[] = [];
-  private actionButton?: CanvasButton;
-  private emergencyButton?: CanvasButton;
-  private pauseButton?: CanvasButton;
-  private dayLabel?: Phaser.GameObjects.Text;
-  private phaseLabel?: Phaser.GameObjects.Text;
+  private resolutionStarted = 0;
+  private resolutionDuration = 1250;
+  private resolutionProgress = 0;
+  private hoverUid?: string;
+  private bg!: Phaser.GameObjects.Image;
+  private shade!: Phaser.GameObjects.Rectangle;
+  private stars: Star[] = [];
+  private ui!: Phaser.GameObjects.Container;
+  private cards: SurvivalCard[] = [];
+  private resourceUi: ResourceUi[] = [];
+  private buttons: Array<{ container: Phaser.GameObjects.Container; setEnabled: (enabled: boolean) => void; setText: (text: string) => void; setActive: (active: boolean) => void }> = [];
+  private paLabel?: Phaser.GameObjects.Text;
+  private statusLabel?: Phaser.GameObjects.Text;
   private timerLabel?: Phaser.GameObjects.Text;
-  private timerBar?: Phaser.GameObjects.Graphics;
-  private progressDots?: Phaser.GameObjects.Graphics;
-  private messageLabel?: Phaser.GameObjects.Text;
-  private messagePlate?: Phaser.GameObjects.Graphics;
-  private eventArt?: Phaser.GameObjects.Image;
-  private eventTitle?: Phaser.GameObjects.Text;
-  private eventDetail?: Phaser.GameObjects.Text;
-  private eventDayLabel?: Phaser.GameObjects.Text;
-  private actionPointsLabel?: Phaser.GameObjects.Text;
-  private actionPointsGraphics?: Phaser.GameObjects.Graphics;
-  private dropZoneGraphics?: Phaser.GameObjects.Graphics;
-  private dropZone?: Phaser.GameObjects.Zone;
-  private dropBounds = new Phaser.Geom.Rectangle(0, 0, 0, 0);
-  private currentEventTarget?: SystemId;
-  private ambientFx: Phaser.GameObjects.Image[] = [];
+  private timerGraphics?: Phaser.GameObjects.Graphics;
+  private planButton?: ReturnType<GameScene["makeButton"]>;
+  private shieldButton?: ReturnType<GameScene["makeButton"]>;
+  private roomSheet?: HTMLElement;
+  private roomForm?: HTMLFormElement;
+  private roomInput?: HTMLInputElement;
+  private roomError?: HTMLElement;
+  private mobile = false;
 
-  constructor() {
-    super("GameScene");
-  }
+  constructor() { super("GameScene"); }
 
   preload(): void {
-    this.load.image("world-background", new URL("../../assets/lunar-outpost-background.png", import.meta.url).href);
-    this.load.image("crew-captain", new URL("../../assets/crew-captain.png", import.meta.url).href);
-    this.load.image("sun-mascot", new URL("../../assets/sun-mascot.png", import.meta.url).href);
-    this.load.image("survival-atlas", new URL("../../assets/survival-cards-atlas.png", import.meta.url).href);
-    this.load.image("battle-atlas", new URL("../../assets/attack-events-atlas.png", import.meta.url).href);
-    this.load.image("system-icon-atlas", new URL("../../assets/system-family-icons-atlas.png", import.meta.url).href);
-    this.load.image("effects-atlas", new URL("../../assets/effects-atlas.png", import.meta.url).href);
+    this.load.image("world", new URL("../../assets/lunar-outpost-background.png", import.meta.url).href);
+    this.load.image("cards", new URL("../../assets/survival-cards-atlas.png", import.meta.url).href);
+    this.load.image("events", new URL("../../assets/attack-events-atlas.png", import.meta.url).href);
+    this.load.image("icons", new URL("../../assets/system-family-icons-atlas.png", import.meta.url).href);
   }
 
   create(): void {
-    this.state = createGame("solo");
-    this.phase = "intro";
-    this.timerSeconds = PLAN_SECONDS;
-    this.paused = false;
-    this.input.dragDistanceThreshold = 8;
-    this.screenWidth = this.scale.width;
-    this.screenHeight = this.scale.height;
-    this.createAtlasFrames("survival-atlas", "survival-art", SURVIVAL_ATLAS.cols, SURVIVAL_ATLAS.rows);
-    this.createAtlasFrames("battle-atlas", "battle-art", ATTACKS_ATLAS.cols, ATTACKS_ATLAS.rows);
-    this.createAtlasFrames("system-icon-atlas", "system-icon", ICONS_ATLAS.cols, ICONS_ATLAS.rows);
-    this.createAtlasFrames("effects-atlas", "effects-art", EFFECTS_ATLAS.cols, EFFECTS_ATLAS.rows);
-    this.createWorld();
-    this.buildInterface();
+    this.createGameLayers();
+    this.createFrames();
+    this.createRoomSheet();
+    this.drawScene();
+    if (new URLSearchParams(window.location.search).get("mode") === "practice") this.startPractice();
     this.scale.on(Phaser.Scale.Events.RESIZE, this.onResize, this);
-    this.input.keyboard?.on("keydown-SPACE", () => this.togglePause());
-    this.input.keyboard?.on("keydown-ENTER", () => this.phase === "intro" ? this.startMission() : this.submitPlan());
+    this.input.keyboard?.on("keydown-ENTER", () => {
+      if (this.phase === "intro") this.startPractice();
+      else if (this.phase === "planning") this.confirmPlan();
+      else if (this.phase === "waiting" && this.roomPlayerIndex === 0) this.startRoom();
+    });
+    this.input.keyboard?.on("keydown-ESC", () => this.closeRoomSheet());
     this.input.keyboard?.on("keydown-R", () => this.restart());
-    this.input.keyboard?.on("keydown-ONE", () => this.toggleCardByIndex(0));
-    this.input.keyboard?.on("keydown-TWO", () => this.toggleCardByIndex(1));
-    this.input.keyboard?.on("keydown-THREE", () => this.toggleCardByIndex(2));
-    this.input.keyboard?.on("keydown-FOUR", () => this.toggleCardByIndex(3));
-    this.input.keyboard?.on("keydown-FIVE", () => this.toggleCardByIndex(4));
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.onResize, this);
+      this.roomClient?.close();
+      this.closeRoomSheet();
+    });
     const loading = document.getElementById("loading-screen");
     if (loading) {
       loading.classList.add("is-ready");
-      window.setTimeout(() => loading.remove(), 260);
+      window.setTimeout(() => loading.remove(), 250);
     }
   }
 
   update(time: number, delta: number): void {
-    this.updateAmbience(time, delta);
-    if (this.phase === "planning" && !this.paused) {
-      this.timerSeconds = Math.max(0, this.timerSeconds - delta / 1000);
-      this.updateTimerDisplay();
-      if (this.timerSeconds <= 0) this.submitPlan();
-    } else if (this.phase === "resolving") {
-      this.resolveElapsed += delta / 1000;
-      if (!this.pendingApplied && this.resolveElapsed >= 1.25) this.applyPendingResolution();
-      if (this.resolveElapsed >= RESOLVE_SECONDS) this.finishResolution();
-      this.updateTimerDisplay();
+    const dt = Math.min(delta, 50) / 1000;
+    this.bg.setPosition(this.scale.width / 2 + Math.sin(time / 9000) * 5, this.scale.height / 2 + Math.sin(time / 7000) * 3);
+    for (const star of this.stars) {
+      star.object.x += star.speed * dt;
+      if (star.object.x > this.scale.width + 3) star.object.x = -3;
+      star.object.y = star.baseY + Math.sin(time / 1100 + star.offset) * 1.5;
+    }
+    if (this.phase === "planning" && !this.locked) {
+      this.timer = this.online ? Math.max(0, (this.deadline - Date.now()) / 1000) : Math.max(0, this.timer - dt);
+      this.updateTimer();
+      if (this.timer <= 0 && !this.state.players[0].colony.eliminated) this.confirmPlan();
+    }
+    if (this.phase === "resolving" && this.pendingState && time - this.resolutionStarted >= this.resolutionDuration) {
+      this.state = this.pendingState;
+      this.pendingState = null;
+      this.resolutionProgress = 0;
+      this.plans = this.state.players.map(() => emptyPlan());
+      this.hoverUid = undefined;
+      this.updateResources();
+      if (!this.online) {
+        if (this.state.status === "over") this.setPhase("over");
+        else this.beginPlanning(PLAN_SECONDS);
+      } else if (this.state.status === "over") {
+        this.setPhase("over");
+      } else {
+        this.showBanner("RONDA RESUELTA · esperando la siguiente", 2600);
+      }
+    }
+    if (this.banner && time >= this.bannerUntil && this.statusLabel && this.phase === "planning") {
+      this.statusLabel.setText(this.online && this.readyText ? this.readyText : "Elige cartas para proteger tu colonia.");
     }
   }
 
-  private createAtlasFrames(textureKey: string, prefix: string, columns: number, rows: number): void {
+  private createGameLayers(): void {
+    const w = this.scale.width;
+    const h = this.scale.height;
+    this.bg = this.add.image(w / 2, h / 2, "world").setDepth(-20).setDisplaySize(w * 1.1, h * 1.1).setAlpha(0.34);
+    this.shade = this.add.rectangle(w / 2, h / 2, w, h, C.bg, 0.78).setDepth(-19);
+    this.stars = [];
+    const count = w < 700 ? 24 : 46;
+    for (let i = 0; i < count; i += 1) {
+      const bright = i % 8 === 0;
+      const star = this.add.circle(Phaser.Math.Between(0, w), Phaser.Math.Between(0, h), bright ? 1.6 : 0.8, bright ? 0xc2d9f1 : 0xffffff, bright ? 0.55 : 0.3).setDepth(-18);
+      this.stars.push({ object: star, speed: bright ? 7 : 2.3, baseY: star.y, offset: Math.random() * 6 });
+    }
+  }
+
+  private createFrames(): void {
+    this.addFrames("cards", "card-art", SURVIVAL_ATLAS.cols, SURVIVAL_ATLAS.rows);
+    this.addFrames("events", "event-art", EVENTS_ATLAS.cols, EVENTS_ATLAS.rows);
+    this.addFrames("icons", "system-icon", ICONS_ATLAS.cols, ICONS_ATLAS.rows);
+  }
+
+  private addFrames(textureKey: string, prefix: string, cols: number, rows: number): void {
     const texture = this.textures.get(textureKey);
     const source = texture.getSourceImage() as HTMLImageElement;
+    const width = source.width / cols;
+    const height = source.height / rows;
     const frames = texture.frames as Record<string, Phaser.Textures.Frame>;
-    const frameWidth = source.width / columns;
-    const frameHeight = source.height / rows;
-    for (let row = 0; row < rows; row += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        const index = row * columns + column;
-        const key = `${prefix}-${index}`;
-        if (!frames[key]) {
-          texture.add(key, 0, Math.floor(column * frameWidth), Math.floor(row * frameHeight), Math.ceil(frameWidth), Math.ceil(frameHeight));
+    for (let y = 0; y < rows; y += 1) for (let x = 0; x < cols; x += 1) {
+      const key = prefix + "-" + (y * cols + x);
+      if (!frames[key]) texture.add(key, 0, Math.floor(x * width), Math.floor(y * height), Math.ceil(width), Math.ceil(height));
+    }
+  }
+
+  private drawScene(): void {
+    if (this.ui?.active) this.ui.destroy(true);
+    this.ui = this.add.container(0, 0).setDepth(1);
+    this.cards = [];
+    this.resourceUi = [];
+    this.buttons = [];
+    this.planButton = undefined;
+    this.shieldButton = undefined;
+    this.paLabel = undefined;
+    this.statusLabel = undefined;
+    this.timerLabel = undefined;
+    this.timerGraphics = undefined;
+    this.mobile = this.scale.width < 760 || this.scale.height < 620;
+    if (this.phase === "intro") this.drawIntro();
+    else if (this.phase === "connecting") this.drawConnecting();
+    else if (this.phase === "waiting") this.drawLobby();
+    else this.drawBoard();
+    if (this.phase === "over") this.drawOutcome();
+  }
+
+  private drawIntro(): void {
+    const w = this.scale.width, h = this.scale.height;
+    const small = Math.min(w, h) < 560;
+    const boxW = Math.min(620, w - 32), boxH = Math.min(455, h - 28);
+    this.panel(w / 2, h / 2, boxW, boxH, 0.94);
+    this.text(w / 2, h / 2 - boxH * 0.37, "MISIÓN: SOBREVIVE AL SOL", small ? 20 : 30, C.text, true, 620);
+    this.text(w / 2, h / 2 - boxH * 0.23, "Cada ronda protege tu colonia. La última que siga en pie gana.", small ? 11 : 14, C.muted, false, boxW - 48);
+    const rules = [
+      "Cuida energía, O₂/agua, comida y escudo.",
+      "Juega mejoras usando hasta 3 puntos de acción.",
+      "Cada 3 rondas hay un evento global; también hay desgaste.",
+      "Una barra en 0% o 100% elimina. Tras el día 15, sigue hasta que quede una.",
+    ];
+    const top = h / 2 - boxH / 2;
+    const startY = top + (small ? 96 : 135);
+    rules.forEach((line, i) => {
+      this.addDot(w / 2 - boxW * 0.34, startY + i * (small ? 23 : 29), i === 3 ? C.gold : C.cyan);
+      this.text(w / 2 - boxW * 0.30, startY + i * (small ? 23 : 29), line, small ? 9 : 12, C.text, false, boxW * 0.62, "left");
+    });
+    const buttonY = top + (small ? 218 : 290);
+    this.makeButton(w / 2, buttonY, Math.min(240, boxW - 40), 43, "CREAR SALA · 2–4", () => this.connectRoom("create"), "primary", small);
+    this.makeButton(w / 2, buttonY + (small ? 45 : 50), Math.min(240, boxW - 40), 38, "UNIRSE CON CÓDIGO", () => this.openRoomSheet(), "secondary", small);
+    this.makeButton(w / 2, buttonY + (small ? 88 : 99), Math.min(240, boxW - 40), 34, "PRÁCTICA VS IA", () => this.startPractice(), "quiet", small);
+    this.text(w / 2, top + (small ? 346 : 427), "El reloj solo empieza al iniciar la sala.", small ? 8 : 10, C.muted, false, boxW - 30);
+  }
+
+  private drawConnecting(): void {
+    const w = this.scale.width, h = this.scale.height;
+    this.panel(w / 2, h / 2, Math.min(390, w - 32), 148, 0.96);
+    this.text(w / 2, h / 2 - 17, "CONECTANDO", 22, C.text, true);
+    this.text(w / 2, h / 2 + 21, this.banner || "Buscando el servidor de salas…", 12, C.muted, false, 330);
+    this.makeButton(w / 2, h / 2 + 65, 130, 34, "VOLVER", () => { this.roomClient?.close(); this.roomClient = undefined; this.setPhase("intro"); }, "quiet", false);
+  }
+
+  private drawLobby(): void {
+    const w = this.scale.width, h = this.scale.height;
+    const small = this.mobile;
+    const boxW = Math.min(560, w - 30), boxH = Math.min(430, h - 28);
+    this.panel(w / 2, h / 2, boxW, boxH, 0.96);
+    this.text(w / 2, h / 2 - boxH * 0.38, "SALA DE SUPERVIVENCIA", small ? 19 : 25, C.text, true);
+    this.text(w / 2, h / 2 - boxH * 0.24, "Comparte este código para reunir 2–4 colonias.", small ? 10 : 12, C.muted);
+    this.text(w / 2, h / 2 - boxH * 0.08, this.roomCode, small ? 34 : 44, C.gold, true, 240);
+    this.makeButton(w / 2, h / 2 + boxH * 0.04, 140, 32, "COPIAR CÓDIGO", () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(this.roomCode);
+      this.showBanner("Código copiado", 1500);
+    }, "secondary", small);
+    const slotY = h / 2 + boxH * 0.19;
+    const slotW = Math.min(105, (boxW - 44) / 4);
+    const gap = 8;
+    for (let i = 0; i < 4; i += 1) {
+      const x = w / 2 - (slotW * 4 + gap * 3) / 2 + slotW / 2 + i * (slotW + gap);
+      const occupied = i < this.roomCount;
+      this.panel(x, slotY, slotW, 45, occupied ? 0.95 : 0.45, occupied ? C.line : 0x1b2b45);
+      this.text(x, slotY, occupied ? (i === 0 ? "HOST" : "LISTO") : "VACÍO", small ? 8 : 9, occupied ? C.green : C.muted, true, slotW - 8);
+    }
+    const canStart = this.roomPlayerIndex === 0 && this.roomCount >= 2;
+    if (this.roomPlayerIndex === 0) {
+      this.makeButton(w / 2, h / 2 + boxH * 0.36, Math.min(270, boxW - 32), 46, canStart ? "INICIAR · " + this.roomCount + " JUGADORES" : "ESPERANDO 2 JUGADORES", () => this.startRoom(), canStart ? "primary" : "quiet", small, canStart);
+    } else {
+      this.text(w / 2, h / 2 + boxH * 0.36, "La partida empieza cuando el anfitrión inicie.", 11, C.muted, false, boxW - 42);
+    }
+    this.text(w / 2, h / 2 + boxH * 0.47, this.banner || "El contador aún no corre.", small ? 9 : 10, C.muted, false, boxW - 30);
+    this.makeButton(w / 2, h / 2 + boxH * 0.54, 100, 28, "SALIR", () => this.leaveRoom(), "quiet", small);
+  }
+
+  private drawBoard(): void {
+    const w = this.scale.width, h = this.scale.height;
+    const compact = this.mobile;
+    const margin = compact ? 14 : Math.max(32, w * 0.055);
+    this.drawHeader(w, compact);
+    this.drawEventBar(w, margin, compact);
+    this.drawColonies(w, margin, compact);
+    this.drawHand(w, h, margin, compact);
+    this.drawActions(w, h, margin, compact);
+    this.updateResources();
+    this.updatePlanControls();
+    this.updateTimer();
+  }
+
+  private drawHeader(w: number, compact: boolean): void {
+    const y = compact ? 27 : 33;
+    this.text(24, y, "MISIÓN", compact ? 14 : 17, C.text, true, 160, "left");
+    this.text(24, y + 17, "SOBREVIVE AL SOL", compact ? 8 : 9, C.cyan, true, 170, "left");
+    this.text(w / 2, y, "RONDA " + this.pad(this.state.day) + (this.state.mode === "solo" ? " / 15" : ""), compact ? 15 : 19, C.text, true);
+    const alive = this.state.players.filter((p) => !p.colony.eliminated).length;
+    this.text(w - 205, y, alive + " COLONIAS VIVAS", compact ? 9 : 10, C.muted, true, 136, "right");
+    this.timerGraphics = this.add.graphics();
+    this.timerLabel = this.add.text(w - 26, y, "", { fontFamily: FONT, fontSize: compact ? "12px" : "14px", fontStyle: "bold", color: "#f3f5f7" }).setOrigin(1, 0.5);
+    this.ui.add([this.timerGraphics, this.timerLabel]);
+    this.statusLabel = this.add.text(w / 2, y + (compact ? 22 : 24), this.phase === "resolving" ? "CARTAS → EVENTO → DESGASTE" : this.statusLine(), {
+      fontFamily: FONT, fontSize: compact ? "8px" : "10px", color: "#9cacc2", align: "center",
+    }).setOrigin(0.5);
+    this.ui.add(this.statusLabel);
+    this.hLine(w / 2, y + (compact ? 39 : 44), marginSafe(w), 0x2a3d5b, 0.7);
+  }
+
+  private drawEventBar(w: number, margin: number, compact: boolean): void {
+    const y = compact ? 92 : 107;
+    const height = compact ? 52 : 58;
+    const event = getEventForDay(this.state);
+    this.panel(w / 2, y, w - margin * 2, height, 0.72, 0x1c2b41);
+    if (!event) {
+      const nextDay = (Math.floor((this.state.day - 1) / 3) + 1) * 3;
+      this.text(margin + 13, y - 7, "PRÓXIMO EVENTO · DÍA " + nextDay, compact ? 8 : 9, C.muted, true, w * 0.4, "left");
+      this.text(margin + 13, y + 11, "Sin evento global esta ronda.", compact ? 10 : 12, C.text, true, w * 0.55, "left");
+      this.text(w - margin - 13, y + 10, "DESGASTE −" + wearForDay(this.state.day + 1) + "%", compact ? 8 : 9, C.gold, true, 150, "right");
+      return;
+    }
+    const art = this.add.image(margin + (compact ? 31 : 38), y, "events", "event-art-" + event.definition.art)
+      .setDisplaySize(compact ? 39 : 48, compact ? 39 : 48);
+    this.ui.add(art);
+    this.text(margin + (compact ? 58 : 70), y - 10, "EVENTO GLOBAL · DÍA " + this.state.day, compact ? 8 : 9, C.gold, true, w * 0.55, "left");
+    this.text(margin + (compact ? 58 : 70), y + 9, event.definition.shortName, compact ? 11 : 14, C.text, true, w * 0.58, "left");
+    const choiceText = event.definition.choice ? "ELIGE UNA BARRA · +" + event.definition.choice + "%" : this.effectsLabel(event.definition.effects || {});
+    this.text(w - margin - 14, y + 9, choiceText, compact ? 8 : 10, C.muted, true, w * 0.34, "right");
+  }
+
+  private drawColonies(w: number, margin: number, compact: boolean): void {
+    const players = this.state.players;
+    const columns = w < 620 ? 1 : 2;
+    const rows = Math.ceil(players.length / columns);
+    const top = compact ? 136 : 167;
+    const gapX = 10, gapY = compact ? 6 : 8;
+    const cellW = (w - margin * 2 - gapX * (columns - 1)) / columns;
+    const areaH = compact ? Math.min(225, this.scale.height * 0.32) : 160;
+    const cellH = (areaH - gapY * (rows - 1)) / rows;
+    players.forEach((player, index) => {
+      const col = index % columns, row = Math.floor(index / columns);
+      const x = margin + cellW / 2 + col * (cellW + gapX);
+      const y = top + cellH / 2 + row * (cellH + gapY);
+      const own = index === 0;
+      this.panel(x, y, cellW, cellH, player.colony.eliminated ? 0.28 : own ? 0.88 : 0.54, own ? 0x243957 : C.panel);
+      this.text(x - cellW / 2 + 11, y - cellH / 2 + 12, player.colony.eliminated ? "COLONIA ELIMINADA" : own ? "TU COLONIA" : player.name.toUpperCase(), compact ? 8 : 9, player.colony.eliminated ? C.red : own ? C.cyan : C.muted, true, cellW * 0.42, "left");
+      const valuesTop = y - cellH / 2 + (cellH < 90 ? 35 : cellH * 0.52);
+      const innerLeft = x - cellW / 2 + 12;
+      const innerW = cellW - 24;
+      const barGap = 7;
+      const barW = (innerW - barGap * 3) / 4;
+      SYSTEMS.forEach((sys, si) => {
+        const bx = innerLeft + barW / 2 + si * (barW + barGap);
+        const resource = this.makeResource(bx, valuesTop, barW, index, sys.id);
+        this.resourceUi.push(resource);
+      });
+    });
+  }
+
+  private makeResource(x: number, y: number, width: number, playerIndex: number, system: SystemId): ResourceUi {
+    const g = this.add.graphics();
+    const name = this.add.text(x - width / 2, y - 5, SYSTEMS_SHORT[system], {
+      fontFamily: FONT, fontSize: width < 75 ? "7px" : "8px", fontStyle: "bold", color: "#aab6c6",
+    }).setOrigin(0, 0.5);
+    const value = this.add.text(x + width / 2, y - 5, "50%", {
+      fontFamily: FONT, fontSize: width < 75 ? "9px" : "10px", fontStyle: "bold", color: "#f3f5f7",
+    }).setOrigin(1, 0.5);
+    const preview = this.add.text(x + width / 2, y + 11, "", {
+      fontFamily: FONT, fontSize: width < 75 ? "7px" : "8px", fontStyle: "bold", color: "#9cacc2",
+    }).setOrigin(1, 0.5);
+    const container = this.add.container(0, 0, [g, name, value, preview]);
+    if (playerIndex === 0 && getEventForDay(this.state)?.definition.choice) {
+      const zone = this.add.zone(x, y + 4, width, 32).setInteractive({ useHandCursor: true });
+      zone.on("pointerup", () => this.chooseEventTarget(system));
+      container.add(zone);
+    }
+    this.ui.add(container);
+    return { graphics: g, value, preview, x, y, width, playerIndex, system };
+  }
+
+  private drawHand(w: number, h: number, margin: number, compact: boolean): void {
+    const y = h - (compact ? 228 : 240);
+    this.text(margin + 2, y - 20, "TU MANO", compact ? 9 : 10, C.text, true, 90, "left");
+    this.paLabel = this.add.text(w - margin, y - 20, "", { fontFamily: FONT, fontSize: compact ? "9px" : "10px", fontStyle: "bold", color: "#f0bd58" }).setOrigin(1, 0.5);
+    this.ui.add(this.paLabel);
+    const hand = this.state.players[0].survivalHand;
+    const columns = compact ? Math.min(3, hand.length) : hand.length;
+    const cardGap = compact ? 7 : 10;
+    const maxCardW = compact ? 162 : 194;
+    const cardW = Math.min(maxCardW, (w - margin * 2 - cardGap * (columns - 1)) / columns);
+    const cardH = compact ? Math.min(142, h * 0.19) : Math.min(155, h * 0.215);
+    const visible = compact ? Math.min(3, hand.length) : hand.length;
+    const handPage = (this as unknown as { handPage?: number }).handPage || 0;
+    const pages = Math.max(1, Math.ceil(hand.length / visible));
+    const page = Math.min(handPage, pages - 1);
+    const shown = hand.slice(page * visible, page * visible + visible);
+    const rowW = shown.length * cardW + Math.max(0, shown.length - 1) * cardGap;
+    const startX = w / 2 - rowW / 2 + cardW / 2;
+    shown.forEach((card, index) => {
+      const view = new SurvivalCard(this, card, startX + index * (cardW + cardGap), y + cardH / 2 + 8, cardW, cardH, {
+        toggle: (selected) => this.toggleCard(selected),
+        hover: (selected) => { this.hoverUid = selected.uid; this.updateResources(); },
+        leave: (selected) => { if (this.hoverUid === selected.uid) this.hoverUid = undefined; this.updateResources(); },
+        drop: (selected, px, py) => {
+          if (py > h - (compact ? 70 : 76)) this.toggleCard(selected);
+        },
+      });
+      this.cards.push(view);
+      this.ui.add(view.container);
+      view.setSelected(isCardSelected(this.plans[0], card.uid), false);
+      view.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated);
+    });
+    if (pages > 1) {
+      this.makeButton(margin + 30, y - 19, 24, 22, "‹", () => this.changeHandPage(-1, pages), "quiet", true, page > 0);
+      this.text(margin + 58, y - 19, (page + 1) + "/" + pages, 8, C.muted);
+      this.makeButton(w - margin - 30, y - 19, 24, 22, "›", () => this.changeHandPage(1, pages), "quiet", true, page < pages - 1);
+    }
+  }
+
+  private handPage = 0;
+
+  private drawActions(w: number, h: number, margin: number, compact: boolean): void {
+    const y = h - (compact ? 43 : 44);
+    const shieldW = Math.min(compact ? 150 : 190, (w - margin * 2 - 12) * 0.46);
+    const primaryW = Math.min(compact ? 172 : 220, (w - margin * 2 - 12) * 0.54);
+    const gap = 10;
+    const totalW = shieldW + primaryW + gap;
+    const shieldX = w / 2 - totalW / 2 + shieldW / 2;
+    const primaryX = shieldX + shieldW / 2 + gap + primaryW / 2;
+    this.shieldButton = this.makeButton(shieldX, y, shieldW, compact ? 36 : 40, "RESERVAR 1 PA", () => this.toggleShield(), "secondary", compact);
+    this.planButton = this.makeButton(primaryX, y, primaryW, compact ? 40 : 44, this.online ? "ENVIAR PLAN" : "RESOLVER RONDA", () => this.confirmPlan(), "primary", compact);
+    const drop = this.add.zone(primaryX, y, primaryW, 48).setRectangleDropZone(primaryW, 48);
+    drop.setDepth(2);
+    this.ui.add(drop);
+  }
+
+  private drawOutcome(): void {
+    const w = this.scale.width, h = this.scale.height;
+    const boxW = Math.min(440, w - 30);
+    this.panel(w / 2, h / 2, boxW, 206, 0.97, this.state.outcome?.winner === 0 ? 0x263b46 : 0x3d2935);
+    const title = this.state.outcome?.title || "CONEXIÓN PERDIDA";
+    const detail = this.state.outcome?.detail || this.banner || "La partida se cerró.";
+    this.text(w / 2, h / 2 - 48, title, 22, this.state.outcome?.winner === 0 ? C.gold : C.text, true, boxW - 30);
+    this.text(w / 2, h / 2 + 2, detail, 12, C.muted, false, boxW - 44);
+    this.makeButton(w / 2, h / 2 + 65, 170, 38, "VOLVER AL INICIO", () => this.restart(), "primary", false);
+  }
+
+  private updateResources(): void {
+    if (!this.resourceUi.length) return;
+    const plan = this.plans[0] || emptyPlan();
+    const preview = previewPlan(this.state, this.plans, 0, this.hoverUid).changes;
+    const event = getEventForDay(this.state);
+    for (const entry of this.resourceUi) {
+      const player = this.state.players[entry.playerIndex];
+      const rawStart = player.colony.resources[entry.system];
+      const target = this.pendingState?.players[entry.playerIndex]?.colony.resources[entry.system] ?? rawStart;
+      const start = rawStart + (target - rawStart) * this.resolutionProgress;
+      let delta = 0;
+      if (entry.playerIndex === 0 && this.phase === "planning") {
+        delta += preview[0][entry.system] || 0;
+        if (event?.definition.choice && (this.currentEventTarget || plan.globalTargetChosen)) {
+          const target = this.currentEventTarget || plan.globalTarget;
+          if (target === entry.system) delta += event.definition.choice;
+        } else if (event?.definition.effects) {
+          const effect = event.definition.effects[entry.system] || 0;
+          delta += effect < 0 && plan.reserveShield ? effect / 2 : effect;
         }
+        const wear = wearForDay(this.state.day + 1);
+        const wearDelta = (entry.system === "energy" || entry.system === "oxygen" || entry.system === "food") ? -wear * (plan.reserveShield ? 0.5 : 1) : 0;
+        delta += wearDelta;
+      }
+      const end = this.phase === "resolving" ? start : start + delta;
+      const collapse = end <= 0 || end >= 100;
+      const clamped = Phaser.Math.Clamp(start, 0, 100);
+      const shown = Phaser.Math.Clamp(end, 0, 100);
+      const color = SYSTEMS_COLOR[entry.system];
+      const g = entry.graphics;
+      g.clear();
+      const left = entry.x - entry.width / 2;
+      g.fillStyle(0x26354b, 0.95).fillRoundedRect(left, entry.y + 3, entry.width, 5, 2.5);
+      g.fillStyle(color, 0.95).fillRoundedRect(left, entry.y + 3, entry.width * clamped / 100, 5, 2.5);
+      if (delta !== 0) {
+        g.fillStyle(collapse ? C.red : delta > 0 ? C.green : C.red, 0.88).fillRoundedRect(left, entry.y + 3, entry.width * Math.abs(delta) / 100, 5, 2.5);
+      }
+      entry.value.setText(Math.round(start) + "%").setColor(player.colony.eliminated ? "#667080" : collapse ? "#f17d7a" : "#f3f5f7");
+      if (entry.playerIndex === 0 && this.phase === "planning" && (delta !== 0 || this.hoverUid)) {
+        entry.preview.setText("→ " + Math.round(end) + "%").setColor(collapse ? "#f17d7a" : delta > 0 ? "#6cdaa0" : "#f0bd58");
+      } else {
+        entry.preview.setText(player.colony.eliminated ? "fuera" : "");
       }
     }
   }
 
-  private createWorld(): void {
-    this.background = this.add.image(this.screenWidth / 2, this.screenHeight / 2, "world-background")
-      .setDepth(-40)
-      .setDisplaySize(this.screenWidth * 1.06, this.screenHeight * 1.06)
-      .setAlpha(0.62);
-    this.backgroundShade = this.add.rectangle(this.screenWidth / 2, this.screenHeight / 2, this.screenWidth, this.screenHeight, 0x06102a, 0.42)
-      .setDepth(-39);
-    this.foreground = this.add.graphics().setDepth(-5);
-    this.makeStarLayers();
-    this.drawForeground();
-    const sparkles = ["effects-art-1", "effects-art-11"];
-    sparkles.forEach((frame, index) => {
-      const x = this.screenWidth * (0.22 + index * 0.19);
-      const y = this.screenHeight * (0.47 + (index % 2) * 0.06);
-      const fx = this.add.image(x, y, "effects-atlas", frame)
-        .setDisplaySize(20 + (index % 2) * 7, 20 + (index % 2) * 7)
-        .setAlpha(0.16)
-        .setDepth(-4);
-      this.ambientFx.push(fx);
-      this.tweens.add({ targets: fx, y: y - 5, alpha: 0.28, duration: 2800 + index * 280, ease: "Sine.InOut", yoyo: true, repeat: -1 });
-    });
+  private updatePlanControls(): void {
+    if (!this.paLabel) return;
+    const used = planCost(this.state.players[0], this.plans[0]);
+    this.paLabel.setText(Math.max(0, ACTION_POINTS - used) + " / " + ACTION_POINTS + " PA");
+    this.cards.forEach((card) => card.setSelected(isCardSelected(this.plans[0], card.instance.uid)));
+    this.cards.forEach((card) => card.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated));
+    this.shieldButton?.setActive(this.plans[0].reserveShield);
+    this.shieldButton?.setText(this.plans[0].reserveShield ? "ESCUDO · MITAD DE DAÑO" : "RESERVAR 1 PA");
+    this.shieldButton?.setEnabled(this.phase === "planning" && !this.locked);
+    const needsTarget = Boolean(getEventForDay(this.state)?.definition.choice) && !this.plans[0].globalTargetChosen;
+    this.planButton?.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated && !needsTarget);
+    this.planButton?.setText(this.locked ? "ESPERANDO A LAS COLONIAS…" : this.online ? "ENVIAR PLAN" : "RESOLVER RONDA");
   }
 
-  private makeStarLayers(): void {
-    this.stars.forEach((star) => star.object.destroy());
-    this.stars = [];
-    const count = this.screenWidth < 1100 ? 36 : 54;
-    for (let index = 0; index < count; index += 1) {
-      const near = index % 7 === 0;
-      const radius = near ? Phaser.Math.FloatBetween(1.5, 2.5) : Phaser.Math.FloatBetween(0.6, 1.4);
-      const x = Phaser.Math.Between(0, this.screenWidth);
-      const y = Phaser.Math.Between(0, this.screenHeight);
-      const color = near ? (index % 2 ? 0x61dfff : 0xffdc86) : 0xeaf2ff;
-      const alpha = near ? 0.7 : Phaser.Math.FloatBetween(0.24, 0.65);
-      const object = this.add.circle(x, y, radius, color, alpha).setDepth(near ? -12 : -20);
-      this.stars.push({ object, x, y, radius, speed: near ? Phaser.Math.FloatBetween(5, 13) : Phaser.Math.FloatBetween(1, 4), alpha, phase: Phaser.Math.FloatBetween(0, Math.PI * 2), amplitude: near ? 3 : 1.1 });
-    }
+  private updateTimer(): void {
+    if (!this.timerLabel || !this.timerGraphics) return;
+    const w = this.scale.width;
+    const left = this.phase === "resolving" ? Math.max(0, this.resolutionDuration / 1000 - (this.time.now - this.resolutionStarted) / 1000) : this.timer;
+    this.timerLabel.setText(this.phase === "over" ? "FIN" : this.phase === "waiting" ? "—" : this.phase === "resolving" ? "…" : Math.ceil(left) + "s");
+    this.timerGraphics.clear();
+    this.timerGraphics.fillStyle(0x29374a, 0.95).fillRoundedRect(w - 102, this.mobile ? 54 : 61, 74, 4, 2);
+    const proportion = this.phase === "planning" ? Phaser.Math.Clamp(left / PLAN_SECONDS, 0, 1) : 1;
+    this.timerGraphics.fillStyle(left < 5 ? C.red : C.gold, 1).fillRoundedRect(w - 102, this.mobile ? 54 : 61, 74 * proportion, 4, 2);
   }
 
-  private drawForeground(): void {
-    this.foreground.clear();
-    const width = this.screenWidth;
-    const height = this.screenHeight;
-    const base = height - Math.max(25, height * 0.055);
-    this.foreground.fillStyle(0x1a2d5c, 0.58);
-    this.foreground.fillPoints([
-      new Phaser.Geom.Point(0, base + 15),
-      new Phaser.Geom.Point(width * 0.08, base - 6),
-      new Phaser.Geom.Point(width * 0.17, base + 5),
-      new Phaser.Geom.Point(width * 0.29, base - 16),
-      new Phaser.Geom.Point(width * 0.42, base + 7),
-      new Phaser.Geom.Point(width * 0.56, base - 9),
-      new Phaser.Geom.Point(width * 0.69, base + 6),
-      new Phaser.Geom.Point(width * 0.81, base - 20),
-      new Phaser.Geom.Point(width * 0.92, base + 2),
-      new Phaser.Geom.Point(width, base - 8),
-      new Phaser.Geom.Point(width, height),
-      new Phaser.Geom.Point(0, height),
-    ], true);
-    this.foreground.fillStyle(0x111f49, 0.68);
-    this.foreground.fillPoints([
-      new Phaser.Geom.Point(0, height - 18),
-      new Phaser.Geom.Point(width * 0.11, height - 35),
-      new Phaser.Geom.Point(width * 0.22, height - 20),
-      new Phaser.Geom.Point(width * 0.32, height - 44),
-      new Phaser.Geom.Point(width * 0.45, height - 21),
-      new Phaser.Geom.Point(width * 0.58, height - 32),
-      new Phaser.Geom.Point(width * 0.72, height - 16),
-      new Phaser.Geom.Point(width * 0.84, height - 39),
-      new Phaser.Geom.Point(width, height - 21),
-      new Phaser.Geom.Point(width, height),
-      new Phaser.Geom.Point(0, height),
-    ], true);
+  private startPractice(): void {
+    this.online = false;
+    this.roomClient?.close();
+    this.roomClient = undefined;
+    this.state = createGame("solo", Date.now(), 2);
+    this.plans = this.state.players.map(() => emptyPlan());
+    this.currentEventTarget = null;
+    this.locked = false;
+    this.beginPlanning(PLAN_SECONDS);
   }
 
-  private updateAmbience(time: number, delta: number): void {
-    if (!this.background || !this.foreground) return;
-    const dt = Math.min(delta, 60) / 1000;
-    this.background.setPosition(this.screenWidth / 2 + Math.sin(time / 8400) * 7, this.screenHeight / 2 + Math.sin(time / 6100) * 4);
-    this.foreground.x = Math.sin(time / 5200) * 5;
-    for (const star of this.stars) {
-      star.x += star.speed * dt;
-      if (star.x > this.screenWidth + 4) star.x = -4;
-      star.object.setPosition(star.x, star.y + Math.sin(time / 920 + star.phase) * star.amplitude);
-      star.object.setAlpha(star.alpha * (0.72 + Math.sin(time / 550 + star.phase) * 0.28));
-    }
+  private beginPlanning(seconds: number): void {
+    this.phase = "planning";
+    this.locked = false;
+    this.timer = seconds;
+    this.deadline = Date.now() + seconds * 1000;
+    this.plans = this.state.players.map(() => emptyPlan());
+    this.hoverUid = undefined;
+    this.readyText = "";
+    this.drawScene();
+    this.showBanner("Elige cartas para proteger tu colonia.", 1800);
   }
 
-  private onResize(gameSize: Phaser.Structs.Size): void {
-    this.screenWidth = gameSize.width;
-    this.screenHeight = gameSize.height;
-    this.background?.setPosition(this.screenWidth / 2, this.screenHeight / 2).setDisplaySize(this.screenWidth * 1.06, this.screenHeight * 1.06);
-    this.backgroundShade?.setPosition(this.screenWidth / 2, this.screenHeight / 2).setSize(this.screenWidth, this.screenHeight);
-    this.foreground?.setPosition(0, 0);
-    this.makeStarLayers();
-    this.drawForeground();
-    this.buildInterface();
-  }
-
-  private buildInterface(): void {
-    this.destroyInterface();
-    this.uiRoot = this.add.container(0, 0).setDepth(10);
-    this.colonyPanels = [];
-    this.cardViews = [];
-    this.cardViewsByUid.clear();
-    this.ambientFx.forEach((fx) => fx.setPosition(fx.x, fx.y));
-    const width = this.screenWidth;
-    const height = this.screenHeight;
-    const tiny = height < 460;
-    const narrow = width < 900 || height < 560;
-    this.narrowLayout = narrow;
-    const compact = height < 790;
-    const headerY = narrow ? 18 : 28;
-    const timelineY = narrow ? 43 : 71;
-    const panelWidth = Math.min(width * (narrow ? 0.43 : 0.445), 650);
-    const panelHeight = narrow ? Math.min(118, height * 0.3) : Math.min(compact ? 215 : 240, height * 0.29);
-    const panelY = narrow ? 78 : compact ? 135 : 148;
-    const leftX = Math.max(18, 22 + panelWidth / 2);
-    const rightX = width - leftX;
-    this.buildHeader(width, headerY, narrow);
-    this.buildTimeline(width, timelineY, narrow);
-    this.buildColonies(leftX, rightX, panelY, panelWidth, panelHeight);
-    const eventY = panelY + panelHeight + (tiny ? 16 : narrow ? 30 : compact ? 41 : 46);
-    this.buildEventSpotlight(eventY, width, compact, narrow, tiny);
-    this.buildHand(width, height, compact, narrow);
-    this.refreshBoard();
-    this.updateHeader();
-    this.updateActionPanel();
-    this.updateEventSpotlight();
-    if (this.phase === "intro") this.buildIntroOverlay();
-    if (this.phase === "over") this.buildOutcomeOverlay();
-  }
-
-  private destroyInterface(): void {
-    this.colonyPanels.forEach((panel) => panel.destroy());
-    this.cardViews.forEach((view) => view.destroy());
-    this.handPageButtons.forEach((button) => button.destroy());
-    this.handPageButtons = [];
-    this.actionButton?.destroy();
-    this.emergencyButton?.destroy();
-    this.pauseButton?.destroy();
-    this.introButton?.destroy();
-    if (this.introRoot?.active) this.introRoot.destroy(true);
-    this.introRoot = undefined;
-    this.introButton = undefined;
-    this.actionButton = undefined;
-    this.emergencyButton = undefined;
-    this.pauseButton = undefined;
-    if (this.uiRoot?.active) this.uiRoot.destroy(true);
-  }
-
-  private buildHeader(width: number, y: number, narrow: boolean): void {
-    const titleIcon = this.add.image(narrow ? 18 : 33, y, "system-icon-atlas", "system-icon-4").setDisplaySize(narrow ? 24 : 39, narrow ? 24 : 39);
-    const title = this.add.text(narrow ? 36 : 60, y - (narrow ? 5 : 8), "MISIÓN", {
-      fontFamily: 'Impact, "Arial Black", "Trebuchet MS", sans-serif',
-      fontSize: narrow ? "15px" : "23px",
-      color: "#fff2ca",
-      stroke: "#17264c",
-      strokeThickness: 4,
-    }).setOrigin(0, 0.5);
-    const subtitle = this.add.text(narrow ? 37 : 61, y + (narrow ? 8 : 12), "SOBREVIVE AL SOL", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: narrow ? "7px" : "11px",
-      fontStyle: "bold",
-      color: "#70dff1",
-      letterSpacing: 1.1,
-    }).setOrigin(0, 0.5);
-    this.phaseLabel = this.add.text(width * 0.32, y, this.phase === "intro" ? "MISIÓN" : this.phase === "planning" ? "PLANIFICACIÓN" : "RESOLUCIÓN", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: "11px",
-      fontStyle: "bold",
-      color: "#d6e2ff",
-      letterSpacing: 1,
-    }).setOrigin(0, 0.5).setVisible(!narrow);
-    this.dayLabel = this.add.text(width * (narrow ? 0.47 : 0.5), y - 5, `DÍA ${this.state.day} / ${MAX_DAY}`, {
-      fontFamily: 'Impact, "Arial Black", sans-serif',
-      fontSize: narrow ? "15px" : "20px",
-      color: "#fff1bf",
-      stroke: "#17264c",
-      strokeThickness: 3,
-      align: "center",
-    }).setOrigin(0.5);
-    this.progressDots = this.add.graphics();
-    this.timerBar = this.add.graphics();
-    this.timerLabel = this.add.text(width - (narrow ? 113 : 196), y, `${Math.ceil(this.timerSeconds)} s`, {
-      fontFamily: 'Impact, "Arial Black", sans-serif',
-      fontSize: narrow ? "15px" : "21px",
-      color: "#ffe28a",
-      align: "right",
-    }).setOrigin(1, 0.5);
-    this.pauseButton = new CanvasButton(this, width - (narrow ? 28 : 55), y, narrow ? 54 : 76, narrow ? 30 : 38, this.paused ? "SEGUIR" : "PAUSAR", () => this.togglePause(), {
-      fill: 0x172d5c,
-      hover: 0x24447c,
-      stroke: 0x8fdcf0,
-      text: "#eaf7ff",
-    }, narrow ? 8 : 10);
-    this.pauseButton.setEnabled(this.phase === "planning");
-    this.uiRoot.add([titleIcon, title, subtitle, this.phaseLabel, this.dayLabel, this.progressDots, this.timerBar, this.timerLabel, this.pauseButton.container]);
-  }
-
-  private buildTimeline(width: number, y: number, narrow: boolean): void {
-    const x0 = narrow ? 16 : 26;
-    const chipWidth = (width - x0 * 2) / 5;
-    const track = this.add.graphics();
-    track.fillStyle(0x0b1a3a, 0.32).fillRoundedRect(x0, y, width - x0 * 2, 31, 9);
-    track.lineStyle(1, 0x6a80b7, 0.2).strokeRoundedRect(x0, y, width - x0 * 2, 31, 9);
-    this.uiRoot.add(track);
-    for (let index = 0; index < 5; index += 1) {
-      const day = (index + 1) * 3;
-      const event = this.state.globalDeck[index];
-      const x = x0 + index * chipWidth;
-      const isCurrent = day === this.state.day;
-      const panel = this.add.graphics();
-      const accent = isCurrent ? COLORS.coral : COLORS.gold;
-      panel.fillStyle(accent, isCurrent ? 1 : 0.6).fillCircle(x + 15, y + 15.5, isCurrent ? 4 : 3);
-      if (index < 4) panel.lineStyle(1, 0x6a80b7, 0.2).lineBetween(x + chipWidth - 1, y + 8, x + chipWidth - 1, y + 23);
-      const dayText = this.add.text(x + 25, y + 15.5, `D${day}`, {
-        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-        fontSize: narrow ? "8px" : "10px",
-        fontStyle: "bold",
-        color: isCurrent ? "#ff8c92" : "#e9ce84",
-        align: "center",
-      }).setOrigin(0.5);
-      const compactEvents: Record<string, string> = {
-        "lunar-night": "LUNA",
-        "class-x-flare": "CLASE X",
-        "martian-dust": "POLVO",
-        "calm-solar-wind": "CALMA",
-        resupply: "CARGA",
-        "galactic-radiation": "RAYOS",
-      };
-      const eventName = narrow ? compactEvents[event.definition.id] ?? event.definition.shortName : event.definition.shortName;
-      const eventText = this.add.text(x + (narrow ? 42 : 45), y + 15.5, eventName, {
-        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-        fontSize: narrow ? "7px" : width < 1150 ? "9px" : "10px",
-        color: isCurrent ? "#fff3e5" : "#b8c7e2",
-        maxLines: 1,
-      }).setOrigin(0, 0.5);
-      this.uiRoot.add([panel, dayText, eventText]);
-    }
-  }
-
-  private buildColonies(leftX: number, rightX: number, y: number, panelWidth: number, panelHeight: number): void {
-    const select = (system: SystemId) => this.selectGlobalTarget(system);
-    const panelA = new ColonyPanel(this, leftX, y + panelHeight / 2, panelWidth, panelHeight, "TU COLONIA", "crew-captain", "__BASE", "system-icon-atlas", COLORS.cyan, true, select);
-    const panelB = new ColonyPanel(this, rightX, y + panelHeight / 2, panelWidth, panelHeight, "COLONIA IA", "sun-mascot", "__BASE", "system-icon-atlas", COLORS.coral, false);
-    this.colonyPanels = [panelA, panelB];
-    const centerX = this.screenWidth / 2;
-    const versusPlate = this.add.graphics();
-    versusPlate.fillStyle(0x0b1a38, 0.88).fillCircle(centerX, y + panelHeight / 2, 22);
-    versusPlate.lineStyle(1, 0x9caccb, 0.4).strokeCircle(centerX, y + panelHeight / 2, 22);
-    const versus = this.add.text(centerX, y + panelHeight / 2, "VS", {
-      fontFamily: 'Impact, "Arial Black", sans-serif',
-      fontSize: "11px",
-      color: "#d7e1f0",
-    }).setOrigin(0.5);
-    this.uiRoot.add([panelA.container, panelB.container, versusPlate, versus]);
-    this.addResourceNames(leftX, rightX, y + panelHeight / 2, panelWidth, panelHeight);
-  }
-
-  private addResourceNames(leftX: number, rightX: number, panelY: number, panelWidth: number, panelHeight: number): void {
-    const gapX = 10;
-    const barWidth = (panelWidth - 24 - gapX) / 2;
-    const barHeight = Math.min(49, (panelHeight - 62) / 2 - 5);
-    const innerX = -panelWidth / 2 + 12;
-    const startY = -panelHeight / 2 + 64 + barHeight / 2;
-    for (const [panelIndex, panelX] of [leftX, rightX].entries()) {
-      SYSTEMS.forEach((system, index) => {
-        const col = index % 2;
-        const row = Math.floor(index / 2);
-        const x = panelX + innerX + col * (barWidth + gapX) + 40;
-        const y = panelY + startY + row * (barHeight + 7) - barHeight / 2 + 3;
-        const compact = barWidth < 155;
-        const name = this.add.text(x, y, system.label, {
-          fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-          fontSize: compact ? "9px" : "12px",
-          fontStyle: "bold",
-          color: "#f1f5ff",
-          stroke: "#07132e",
-          strokeThickness: 2,
-          letterSpacing: 0.6,
-        }).setDepth(30);
-        this.uiRoot.add(name);
-      });
-    }
-  }
-
-  private buildEventSpotlight(y: number, width: number, compact: boolean, narrow: boolean, tiny: boolean): void {
-    const panelWidth = Math.min(narrow ? 520 : 520, narrow ? width - 28 : width * 0.56);
-    const panelHeight = tiny ? 32 : narrow ? 60 : compact ? 72 : 88;
-    const eventRoot = this.add.container(width / 2, y);
-    const panel = this.add.graphics();
-    panel.fillStyle(0x081733, 0.55).fillRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 12);
-    panel.lineStyle(1, 0x7a8fb8, 0.32).strokeRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 12);
-    const event = this.getSpotlightEvent();
-    this.eventArt = this.add.image(-panelWidth / 2 + (tiny ? 19 : narrow ? 27 : 48), 0, "battle-atlas", `battle-art-${event.definition.art}`).setDisplaySize(tiny ? 20 : narrow ? 32 : compact ? 46 : 54, tiny ? 20 : narrow ? 32 : compact ? 46 : 54);
-    const textX = -panelWidth / 2 + (tiny ? 37 : narrow ? 51 : 88);
-    this.eventDayLabel = this.add.text(textX, tiny ? -10 : narrow ? -21 : -panelHeight / 2 + 16, `PRÓXIMO EVENTO · DÍA ${this.getSpotlightDay()}`, {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: tiny ? "6px" : narrow ? "7px" : "9px",
-      fontStyle: "bold",
-      color: "#ffdf8a",
-      letterSpacing: 0.7,
-    }).setOrigin(0, 0.5);
-    this.eventTitle = this.add.text(textX, tiny ? 0 : narrow ? -6 : -panelHeight / 2 + 36, event.definition.name.toUpperCase(), {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: tiny ? "7px" : narrow ? "9px" : compact ? "11px" : "13px",
-      fontStyle: "bold",
-      color: "#f8fbff",
-      wordWrap: { width: panelWidth - (tiny ? 48 : narrow ? 65 : 125) },
-      maxLines: 1,
-    }).setOrigin(0, 0.5);
-    this.eventDetail = this.add.text(textX, tiny ? 10 : narrow ? 8 : panelHeight / 2 - 13, event.definition.science, {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: tiny ? "6px" : narrow ? "7px" : compact ? "9px" : "10px",
-      color: "#c9d9fa",
-      wordWrap: { width: panelWidth - (tiny ? 48 : narrow ? 65 : 125) },
-      maxLines: tiny || narrow ? 1 : 2,
-      lineSpacing: -1,
-    }).setOrigin(0, 0.5);
-    this.messagePlate = this.add.graphics();
-    this.messageLabel = this.add.text(0, tiny ? 0 : narrow ? 23 : panelHeight / 2 + 14, this.feedback, {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: tiny ? "6px" : narrow ? "7px" : compact ? "10px" : "11px",
-      fontStyle: "bold",
-      color: "#fff2d1",
-      align: "center",
-      wordWrap: { width: tiny ? panelWidth - 48 : narrow ? panelWidth - 65 : width - 120 },
-      maxLines: tiny || narrow ? 1 : 2,
-    }).setOrigin(0.5, 0.5);
-    if (tiny) this.messageLabel.setVisible(false);
-    eventRoot.add([panel, this.eventArt, this.eventDayLabel, this.eventTitle, this.eventDetail, this.messagePlate, this.messageLabel]);
-    this.uiRoot.add(eventRoot);
-  }
-
-  private buildHand(width: number, height: number, compact: boolean, narrow: boolean): void {
-    if (narrow) {
-      this.buildNarrowHand(width, height);
+  private confirmPlan(): void {
+    if (this.phase !== "planning" || this.locked) return;
+    if (this.state.players[0].colony.eliminated) return;
+    if (this.online) {
+      const sent = this.roomClient?.send({ type: "submit-plan", plan: structuredClone(this.plans[0]) });
+      if (!sent) { this.showBanner("No hay conexión con la sala.", 2500); return; }
+      this.locked = true;
+      this.readyText = "Plan privado enviado. Esperando a las demás colonias.";
+      this.showBanner(this.readyText, 3000);
+      this.updatePlanControls();
+      if (this.statusLabel) this.statusLabel.setText(this.readyText);
       return;
     }
-    const cardHeight = Math.min(compact ? 198 : 232, height * 0.265);
-    const cardY = height - cardHeight / 2 - 28;
-    const actionWidth = Math.min(168, width * 0.14);
-    const cardGap = 10;
-    const cardWidth = Math.min(224, (width - 60 - actionWidth - 12 - cardGap * 4) / 5);
-    const cardsTotal = cardWidth * 5 + cardGap * 4;
-    const groupWidth = cardsTotal + 12 + actionWidth;
-    const startX = (width - groupWidth) / 2 + cardWidth / 2;
-    const player = this.state.players[0];
-    const hand = [...player.survivalHand, ...player.attackHand];
-    hand.forEach((card, index) => {
-      const x = startX + index * (cardWidth + cardGap);
-      const view = new CardView(this, card, x, cardY, cardWidth, cardHeight, "survival-atlas", "battle-atlas", {
-        onToggle: (selectedCard) => this.toggleCard(selectedCard),
-        onHover: (hoveredCard) => this.onCardHover(hoveredCard),
-        onLeave: (leftCard) => this.onCardLeave(leftCard),
-        onDrop: (droppedCard, dropX, dropY) => this.onCardDrop(droppedCard, dropX, dropY),
-      }, 20 + index);
-      this.cardViews.push(view);
-      this.cardViewsByUid.set(card.uid, view);
-      this.uiRoot.add(view.container);
-      if (isCardSelected(this.plans[0], card.uid)) view.setSelected(true, false);
+    const otherPlan = chooseAiPlan(this.state, 1);
+    this.resolveTo(resolveRound(this.state, [structuredClone(this.plans[0]), otherPlan]));
+  }
+
+  private resolveTo(next: GameState): void {
+    this.pendingState = next;
+    this.phase = "resolving";
+    this.resolutionStarted = this.time.now;
+    this.resolutionDuration = 1400;
+    this.resolutionProgress = 0;
+    this.tweens.killTweensOf(this);
+    this.tweens.add({
+      targets: this, resolutionProgress: 1, duration: this.resolutionDuration, ease: "Cubic.Out",
+      onUpdate: () => this.updateResources(),
     });
-
-    const actionX = startX - cardWidth / 2 + cardsTotal + 12 + actionWidth / 2;
-    const actionTop = cardY - cardHeight / 2;
-    const actionBottom = actionTop + cardHeight;
-    const panel = this.add.graphics();
-    panel.fillStyle(0x07132c, 0.82).fillRoundedRect(actionX - actionWidth / 2, actionTop, actionWidth, cardHeight, 18);
-    panel.lineStyle(2, 0x607ab9, 0.68).strokeRoundedRect(actionX - actionWidth / 2, actionTop, actionWidth, cardHeight, 18);
-    this.uiRoot.add(panel);
-
-    this.actionPointsGraphics = this.add.graphics();
-    this.actionPointsLabel = this.add.text(actionX, actionTop + 20, "3 PA DISPONIBLES", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: compact ? "10px" : "11px",
-      fontStyle: "bold",
-      color: "#fff0c4",
-      align: "center",
-    }).setOrigin(0.5);
-    this.uiRoot.add([this.actionPointsGraphics, this.actionPointsLabel]);
-
-    this.emergencyButton = new CanvasButton(this, actionX, actionTop + cardHeight * 0.39, actionWidth - 16, compact ? 43 : 48, "GUARDAR 1 PA\nESCUDO ½", () => this.toggleShield(), {
-      fill: 0x293565,
-      hover: 0x3b4c8e,
-      stroke: 0xffd15d,
-      text: "#fff3cc",
-    }, compact ? 9 : 10);
-    this.uiRoot.add(this.emergencyButton.container);
-
-    const dropY = actionTop + cardHeight * (compact ? 0.58 : 0.59);
-    this.dropZoneBounds(actionX, dropY, actionWidth - 18, compact ? 26 : 32);
-    const dropHint = this.add.text(actionX, dropY, "ARRASTRA AQUÍ", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: compact ? "8px" : "9px",
-      fontStyle: "bold",
-      color: "#c9f8da",
-      align: "center",
-    }).setOrigin(0.5);
-    this.uiRoot.add(dropHint);
-    this.actionButton = new CanvasButton(this, actionX, actionBottom - (compact ? 30 : 36), actionWidth - 16, compact ? 47 : 52, "RESOLVER\nTURNO", () => this.submitPlan(), {
-      fill: 0x72e597,
-      hover: 0x91ffb2,
-      stroke: 0xe1ffe7,
-      text: "#12324a",
-    }, compact ? 12 : 13);
-    this.uiRoot.add(this.actionButton.container);
-
-    const hint = this.add.text(width / 2, height - 8, "VERDE ↑ SUBE  ·  ROJO ↓ BAJA  ·  HAZ CLIC O ARRASTRA PARA ELEGIR", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: "9px",
-      fontStyle: "bold",
-      color: "#d1dbfa",
-      letterSpacing: 0.5,
-    }).setOrigin(0.5, 1).setAlpha(0.82);
-    this.uiRoot.add(hint);
-  }
-
-  private buildNarrowHand(width: number, height: number): void {
-    const cardHeight = Math.min(158, Math.max(132, height * 0.4));
-    const cardY = height - cardHeight / 2 - 4;
-    const actionWidth = Math.min(142, width * 0.23);
-    const cardGap = 8;
-    const cardWidth = Math.min(226, (width - 28 - actionWidth - 12 - cardGap) / 2);
-    const cardsTotal = cardWidth * 2 + cardGap;
-    const groupWidth = cardsTotal + 12 + actionWidth;
-    const startX = (width - groupWidth) / 2 + cardWidth / 2;
-    const hand = [...this.state.players[0].survivalHand, ...this.state.players[0].attackHand];
-    const pages = Math.max(1, Math.ceil(hand.length / 2));
-    this.handPage = Phaser.Math.Clamp(this.handPage, 0, pages - 1);
-    const visibleCards = hand.slice(this.handPage * 2, this.handPage * 2 + 2);
-
-    visibleCards.forEach((card, index) => {
-      const view = new CardView(this, card, startX + index * (cardWidth + cardGap), cardY, cardWidth, cardHeight, "survival-atlas", "battle-atlas", {
-        onToggle: (selectedCard) => this.toggleCard(selectedCard),
-        onHover: (hoveredCard) => this.onCardHover(hoveredCard),
-        onLeave: (leftCard) => this.onCardLeave(leftCard),
-        onDrop: (droppedCard, dropX, dropY) => this.onCardDrop(droppedCard, dropX, dropY),
-      }, 20 + index);
-      this.cardViews.push(view);
-      this.cardViewsByUid.set(card.uid, view);
-      this.uiRoot.add(view.container);
-      if (isCardSelected(this.plans[0], card.uid)) view.setSelected(true, false);
+    this.readyText = "";
+    this.cards.forEach((card, index) => {
+      if (isCardSelected(this.plans[0], card.instance.uid)) card.animatePlay(index);
     });
-
-    const actionX = startX - cardWidth / 2 + cardsTotal + 12 + actionWidth / 2;
-    const actionTop = cardY - cardHeight / 2;
-    const actionBottom = actionTop + cardHeight;
-    const panel = this.add.graphics();
-    panel.fillStyle(0x07132c, 0.8).fillRoundedRect(actionX - actionWidth / 2, actionTop, actionWidth, cardHeight, 12);
-    panel.lineStyle(1, 0x607ab9, 0.55).strokeRoundedRect(actionX - actionWidth / 2, actionTop, actionWidth, cardHeight, 12);
-    this.uiRoot.add(panel);
-
-    const changePage = (step: number) => {
-      const page = Phaser.Math.Clamp(this.handPage + step, 0, pages - 1);
-      if (page === this.handPage) return;
-      this.handPage = page;
-      this.buildInterface();
-      this.animateCardsIn();
-    };
-    const pagePrevious = new CanvasButton(this, actionX - 45, actionTop + 15, 24, 22, "‹", () => changePage(-1), {
-      fill: 0x1a2c4a, hover: 0x31476c, stroke: 0x8092b3, text: "#f0f3f8",
-    }, 15);
-    const pageNext = new CanvasButton(this, actionX + 45, actionTop + 15, 24, 22, "›", () => changePage(1), {
-      fill: 0x1a2c4a, hover: 0x31476c, stroke: 0x8092b3, text: "#f0f3f8",
-    }, 15);
-    pagePrevious.setEnabled(this.handPage > 0);
-    pageNext.setEnabled(this.handPage < pages - 1);
-    const pageLabel = this.add.text(actionX, actionTop + 15, `MANO ${this.handPage + 1}/${pages}`, {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif', fontSize: "8px", fontStyle: "bold", color: "#dbe3f0", align: "center",
-    }).setOrigin(0.5);
-    this.handPageButtons.push(pagePrevious, pageNext);
-    this.uiRoot.add([pagePrevious.container, pageNext.container, pageLabel]);
-
-    this.actionPointsGraphics = this.add.graphics();
-    this.actionPointsLabel = this.add.text(actionX, actionTop + 43, "3 PA", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif', fontSize: "10px", fontStyle: "bold", color: "#fff0c4", align: "center",
-    }).setOrigin(0.5);
-    this.uiRoot.add([this.actionPointsGraphics, this.actionPointsLabel]);
-
-    this.emergencyButton = new CanvasButton(this, actionX, actionTop + 81, actionWidth - 12, 30, "GUARDAR PA", () => this.toggleShield(), {
-      fill: 0x293565, hover: 0x3b4c8e, stroke: 0xd8c17a, text: "#fff3cc",
-    }, 8);
-    this.uiRoot.add(this.emergencyButton.container);
-    const resolveY = actionBottom - 23;
-    const resolveWidth = actionWidth - 12;
-    const resolveHeight = 42;
-    this.dropBounds.setTo(actionX - resolveWidth / 2, resolveY - resolveHeight / 2, resolveWidth, resolveHeight);
-    this.actionButton = new CanvasButton(this, actionX, resolveY, resolveWidth, resolveHeight, "RESOLVER TURNO", () => this.submitPlan(), {
-      fill: 0x75d998, hover: 0x92eab0, stroke: 0xc8f3d2, text: "#173448",
-    }, 9);
-    this.uiRoot.add(this.actionButton.container);
-
-    const hint = this.add.text(width / 2, height - 2, "PASA LAS PÁGINAS PARA VER LAS CINCO CARTAS", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif', fontSize: "8px", fontStyle: "bold", color: "#d1dbfa",
-    }).setOrigin(0.5, 1).setAlpha(0.78);
-    this.uiRoot.add(hint);
-    this.updateActionPanel();
-  }
-
-  private dropZoneBounds(x: number, y: number, width: number, height: number): void {
-    this.dropBounds.setTo(x - width / 2, y - height / 2, width, height);
-    this.dropZoneGraphics = this.add.graphics();
-    this.dropZoneGraphics.lineStyle(2, 0x74e9a6, 0.7).strokeRoundedRect(this.dropBounds.x, this.dropBounds.y, width, height, 12);
-    this.dropZoneGraphics.fillStyle(0x2cd47d, 0.08).fillRoundedRect(this.dropBounds.x, this.dropBounds.y, width, height, 12);
-    this.dropZone = this.add.zone(x, y, width, height).setSize(width, height).setInteractive({ dropZone: true });
-    this.dropZone.on("pointerover", () => this.dropZoneGraphics?.setAlpha(1));
-    this.dropZone.on("pointerout", () => this.dropZoneGraphics?.setAlpha(0.68));
-    this.uiRoot.add([this.dropZoneGraphics, this.dropZone]);
-  }
-
-  private updateHeader(): void {
-    if (!this.dayLabel || !this.progressDots) return;
-    const width = this.screenWidth;
-    this.phaseLabel?.setText(this.phase === "intro" ? "MISIÓN" : this.phase === "planning" ? (this.paused ? "PAUSA" : "PLANIFICACIÓN") : this.phase === "resolving" ? "RESOLUCIÓN" : "MISIÓN TERMINADA");
-    this.dayLabel.setText(this.phase === "resolving" ? `DÍA ${Math.min(this.state.day, MAX_DAY)} / ${MAX_DAY}` : `DÍA ${this.state.day} / ${MAX_DAY}`);
-    this.progressDots.clear();
-    const start = width * 0.5 - 79;
-    for (let day = 1; day <= MAX_DAY; day += 1) {
-      const x = start + (day - 1) * 11.3;
-      const active = day <= this.state.day;
-      const current = day === this.state.day;
-      const color = current ? COLORS.gold : active ? COLORS.cyan : 0x38507f;
-      this.progressDots.fillStyle(color, active ? 0.95 : 0.7).fillRoundedRect(x, this.narrowLayout ? 34 : 47, current ? 9 : 7, current ? 5 : 4, 2);
-    }
-    this.updateTimerDisplay();
-  }
-
-  private updateTimerDisplay(): void {
-    if (!this.timerLabel || !this.timerBar) return;
-    const width = this.screenWidth;
-    const isResolving = this.phase === "resolving";
-    const left = isResolving ? Math.max(0, RESOLVE_SECONDS - this.resolveElapsed) : this.timerSeconds;
-    const max = isResolving ? RESOLVE_SECONDS : PLAN_SECONDS;
-    const text = this.phase === "intro" ? `${PLAN_SECONDS} s` : this.phase === "over" ? "FIN" : this.paused && this.phase === "planning" ? "PAUSA" : `${Math.ceil(left)} s`;
-    this.timerLabel.setText(text);
-    this.timerLabel.setColor(left <= 5 && !this.paused && this.phase === "planning" ? "#ff737b" : "#ffe28a");
-    this.timerBar.clear();
-    const barWidth = this.narrowLayout ? 46 : 132;
-    const x = width - (this.narrowLayout ? 106 : 190);
-    const y = this.narrowLayout ? 34 : 45;
-    this.timerBar.fillStyle(0x09142d, 0.9).fillRoundedRect(x, y, barWidth, 5, 3);
-    this.timerBar.fillStyle(left <= 5 && !this.paused ? COLORS.coral : COLORS.gold, 1).fillRoundedRect(x, y, barWidth * Phaser.Math.Clamp(left / max, 0, 1), 5, 3);
-  }
-
-  private updateActionPanel(): void {
-    if (!this.actionPointsLabel || !this.actionPointsGraphics || !this.actionButton || !this.emergencyButton) return;
-    const player = this.state.players[0];
-    const cost = planCost(player, this.plans[0]);
-    const remaining = ACTION_POINTS - cost;
-    const count = this.plans[0].survival.length + this.plans[0].attacks.length;
-    const currentEvent = getEventForDay(this.state);
-    const targetMissing = this.phase === "planning" && Boolean(currentEvent?.definition.choice) && !this.plans[0].globalTargetChosen;
-    this.actionPointsLabel.setText(`${remaining} PA RESTANTES`);
-    this.actionPointsGraphics.clear();
-    const cx = this.actionPointsLabel.x;
-    const cy = this.actionPointsLabel.y + 20;
-    for (let index = 0; index < ACTION_POINTS; index += 1) {
-      const color = index < cost ? COLORS.gold : 0x33466e;
-      this.actionPointsGraphics.fillStyle(color, 1).fillCircle(cx - 20 + index * 20, cy, 6);
-      this.actionPointsGraphics.lineStyle(1, 0xfff1c7, 0.6).strokeCircle(cx - 20 + index * 20, cy, 6);
-    }
-    const shield = this.plans[0].reserveShield;
-    this.emergencyButton.setActive(shield);
-    this.emergencyButton.setText(shield ? "ESCUDO ACTIVO\nDAÑO A LA MITAD" : "GUARDAR 1 PA\nESCUDO A LA MITAD");
-    this.emergencyButton.setEnabled(this.phase === "planning" && (shield || remaining >= 1));
-    this.actionButton.setText(this.phase === "resolving" ? "RESOLVIENDO…" : this.phase === "over" ? "MISIÓN TERMINADA" : targetMissing ? "ELIGE UNA BARRA" : `RESOLVER PLAN${count ? ` · ${count}` : ""}`);
-    this.actionButton.setEnabled(this.phase === "planning" && !targetMissing);
-    if (this.dropZoneGraphics) {
-      this.dropZoneGraphics.clear();
-      const zone = this.dropBounds;
-      this.dropZoneGraphics.fillStyle(0x2cd47d, count ? 0.13 : 0.06).fillRoundedRect(zone.x, zone.y, zone.width, zone.height, 12);
-      this.dropZoneGraphics.lineStyle(2, count ? 0x82f6b1 : 0x5c82ad, count ? 0.95 : 0.68).strokeRoundedRect(zone.x, zone.y, zone.width, zone.height, 12);
-    }
-  }
-
-  private refreshBoard(): void {
-    if (this.colonyPanels.length !== 2) return;
-    const plans = this.phase === "planning" ? this.plans : [emptyPlan(), emptyPlan()] as [RoundPlan, RoundPlan];
-    const preview = this.phase === "planning" ? previewPlan(this.state, plans, 0, this.hoveredUid).changes : [{}, {}] as [Effects, Effects];
-    const currentEvent = getEventForDay(this.state);
-    const canChoose = this.phase === "planning" && Boolean(currentEvent?.definition.choice);
-    const concealed = this.state.day <= this.state.players[1].colony.concealedThroughDay;
-    this.colonyPanels[0].setResourceTargetEnabled(canChoose);
-    this.colonyPanels[0].update(this.state.players[0].colony.resources, preview[0], false, canChoose && this.plans[0].globalTargetChosen ? this.plans[0].globalTarget : undefined, this.state.players[0].colony.eliminated);
-    this.colonyPanels[1].update(this.state.players[1].colony.resources, preview[1], concealed, undefined, this.state.players[1].colony.eliminated);
-    this.updateActionPanel();
-  }
-
-  private updateEventSpotlight(): void {
-    if (!this.eventArt || !this.eventTitle || !this.eventDetail || !this.eventDayLabel) return;
-    const event = this.getSpotlightEvent();
-    const day = this.getSpotlightDay();
-    this.eventArt.setFrame(`battle-art-${event.definition.art}`);
-    this.eventTitle.setText(event.definition.name.toUpperCase());
-    const currentChoice = getEventForDay(this.state)?.definition.choice;
-    this.eventDetail.setText(event.definition.choice
-      ? currentChoice && !this.plans[0].globalTargetChosen
-        ? `Toca una barra para elegir dónde sumar +${event.definition.choice}%.`
-        : `Cada colonia elige una barra para sumar +${event.definition.choice}%.`
-      : event.definition.science);
-    if (currentChoice && this.plans[0].globalTargetChosen) {
-      const chosenName = SYSTEMS.find((system) => system.id === this.plans[0].globalTarget)?.name.toLowerCase();
-      this.eventDetail.setText(`Tu colonia repone ${chosenName}: +${currentChoice}%. La rival también elige su barra.`);
-    }
-    this.eventDayLabel.setText(`${day === this.state.day ? "EVENTO DE HOY" : "PRÓXIMO FENÓMENO"} · DÍA ${day}`);
-    if (this.messageLabel) this.messageLabel.setText(this.feedback).setColor(Phaser.Display.Color.IntegerToColor(this.feedbackColor).rgba);
+    if (this.statusLabel) this.statusLabel.setText("MEJORAS → EVENTO GLOBAL → DESGASTE");
+    this.updatePlanControls();
   }
 
   private toggleCard(card: CardInstance): void {
-    if (this.phase !== "planning") return;
-    const changed = togglePlanCard(this.state.players[0], this.plans[0], card);
-    if (!changed) {
-      this.setFeedback("Máximo 3 PA. Desmarca una carta o reserva solo 1 PA.", COLORS.coral);
-      this.scenePulse(this.cardViewsByUid.get(card.uid)?.container);
+    if (this.phase !== "planning" || this.locked) return;
+    const ok = togglePlanCard(this.state.players[0], this.plans[0], card);
+    if (!ok) {
+      this.showBanner("Superas los 3 PA disponibles.", 1500);
+      this.cameras.main.shake(90, 0.002);
       return;
     }
-    const selected = isCardSelected(this.plans[0], card.uid);
-    this.cardViewsByUid.get(card.uid)?.setSelected(selected);
-    this.setFeedback(selected ? `${card.definition.shortName} quedó en el plan.` : `${card.definition.shortName} salió del plan.`, COLORS.gold);
-    this.refreshBoard();
+    this.updatePlanControls();
+    this.updateResources();
   }
 
   private toggleShield(): void {
-    if (this.phase !== "planning") return;
-    const enabled = toggleEmergencyShield(this.state.players[0], this.plans[0]);
-    if (!enabled) {
-      this.setFeedback("Reserva 1 PA para activar el protocolo de emergencia.", COLORS.coral);
+    if (this.phase !== "planning" || this.locked) return;
+    if (!toggleEmergencyShield(this.state.players[0], this.plans[0])) {
+      this.showBanner("Quita una carta para reservar 1 PA.", 1500);
       return;
     }
-    this.setFeedback(this.plans[0].reserveShield ? "Protocolo activo: el daño entrante se reduce a la mitad." : "Protocolo de emergencia desactivado.", COLORS.mint);
-    this.refreshBoard();
+    this.updatePlanControls();
+    this.updateResources();
   }
 
-  private selectGlobalTarget(system: SystemId): void {
+  private chooseEventTarget(system: SystemId): void {
     const event = getEventForDay(this.state);
-    if (this.phase !== "planning" || !event?.definition.choice) return;
+    if (this.phase !== "planning" || !event?.definition.choice || this.locked) return;
+    this.currentEventTarget = system;
     this.plans[0].globalTarget = system;
     this.plans[0].globalTargetChosen = true;
-    this.currentEventTarget = system;
-    this.setFeedback(`La cápsula repondrá ${system.toUpperCase()} en tu colonia.`, COLORS.gold);
-    this.refreshBoard();
+    this.updatePlanControls();
+    this.updateResources();
+    this.showBanner("Reabastecimiento asignado a " + SYSTEMS_SHORT[system] + ".", 1500);
   }
 
-  private onCardHover(card: CardInstance): void {
-    if (this.phase !== "planning") return;
-    this.hoveredUid = card.uid;
-    this.feedback = this.cardHint(card);
-    this.feedbackColor = card.kind === "attack" ? COLORS.coral : COLORS.cyan;
-    this.updateEventSpotlight();
-    this.refreshBoard();
+  private changeHandPage(step: number, pages: number): void {
+    this.handPage = Phaser.Math.Clamp(this.handPage + step, 0, pages - 1);
+    this.drawScene();
   }
 
-  private onCardLeave(card: CardInstance): void {
-    if (this.hoveredUid !== card.uid) return;
-    this.hoveredUid = undefined;
-    this.feedback = "Elige cartas (3 PA), revisa las barras y resuelve el turno.";
-    this.feedbackColor = COLORS.cream;
-    this.updateEventSpotlight();
-    this.refreshBoard();
-  }
-
-  private onCardDrop(card: CardInstance, x: number, y: number): void {
-    if (this.phase !== "planning") return;
-    if (this.dropBounds.contains(x, y)) this.toggleCard(card);
-  }
-
-  private cardHint(card: CardInstance): string {
-    const effects = Object.entries(card.definition.effects)
-      .filter(([, value]) => Boolean(value))
-      .map(([system, value]) => `${Number(value) > 0 ? "+" : "−"}${Math.abs(Number(value))}% ${system.toUpperCase()}`);
-    const science = card.definition.science;
-    if (card.kind === "attack") {
-      const attack = card.definition as AttackCardDefinition;
-      const selfCost = Object.entries(attack.selfCost).map(([system, value]) => `${Number(value) > 0 ? "+" : "−"}${Math.abs(Number(value))}% ${system.toUpperCase()}`).join(" · ");
-      return `${science}  ·  COSTO PROPIO: ${selfCost || "—"}`;
-    }
-    return `${science}  ·  ${effects.join(" · ")}`;
-  }
-
-  private toggleCardByIndex(index: number): void {
-    const card = this.cardViews[index]?.card;
-    if (card) this.toggleCard(card);
-  }
-
-  private submitPlan(): void {
-    if (this.phase !== "planning") return;
-    try {
-      const aiPlan = chooseAiPlan(this.state, 1);
-      this.pendingState = resolveRound(this.state, [structuredClone(this.plans[0]), aiPlan]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "No se pudo resolver el plan.";
-      this.setFeedback(message, COLORS.coral);
-      return;
-    }
-    this.phase = "resolving";
-    this.paused = true;
-    this.resolveElapsed = 0;
-    this.pendingApplied = false;
-    this.feedback = "ATAQUES → SUPERVIVENCIA → EVENTO NASA";
-    this.feedbackColor = COLORS.gold;
-    this.updateHeader();
-    this.updateActionPanel();
-    this.animateCardsToBases();
-    this.refreshBoard();
-  }
-
-  private animateCardsToBases(): void {
-    const selected = this.cardViews.filter((view) => isCardSelected(this.plans[0], view.card.uid));
-    selected.forEach((view, index) => {
-      const destination = view.card.kind === "attack" ? this.screenWidth * 0.77 : this.screenWidth * 0.23;
-      const y = this.screenHeight * 0.36;
-      this.tweens.add({
-        targets: view.container,
-        x: destination + Phaser.Math.Between(-24, 24),
-        y: y + Phaser.Math.Between(-18, 18),
-        scaleX: 0.38,
-        scaleY: 0.38,
-        angle: Phaser.Math.Between(-10, 10),
-        alpha: 0,
-        delay: index * 70,
-        duration: 670,
-        ease: "Cubic.In",
-        onComplete: () => this.spawnImpact(destination, y, view.card.kind === "attack" ? 0 : 1),
-      });
-    });
-    if (!selected.length) this.setFeedback("El turno se resuelve sin cartas jugadas.", COLORS.cream);
-  }
-
-  private spawnImpact(x: number, y: number, kind: number): void {
-    const index = kind === 0 ? 0 : 9;
-    const burst = this.add.image(x, y, "effects-atlas", `effects-art-${index}`).setDisplaySize(14, 14).setDepth(45).setAlpha(0.95);
-    this.tweens.add({ targets: burst, scale: 5.5, alpha: 0, angle: kind ? 12 : -8, duration: 520, ease: "Cubic.Out", onComplete: () => burst.destroy() });
-    for (let spark = 0; spark < 5; spark += 1) {
-      const dot = this.add.circle(x, y, Phaser.Math.Between(2, 4), kind ? COLORS.mint : COLORS.gold, 0.95).setDepth(46);
-      this.tweens.add({ targets: dot, x: x + Phaser.Math.Between(-70, 70), y: y + Phaser.Math.Between(-55, 55), alpha: 0, scale: 0.3, duration: Phaser.Math.Between(340, 620), ease: "Cubic.Out", onComplete: () => dot.destroy() });
-    }
-  }
-
-  private applyPendingResolution(): void {
-    if (!this.pendingState) return;
-    this.state = this.pendingState;
-    this.pendingState = null;
-    this.pendingApplied = true;
-    const actionSummary = this.state.lastEvents.filter((event) => event.kind === "attack" || event.kind === "survival" || event.kind === "global" || event.kind === "collapse").map((event) => event.text);
-    this.feedback = actionSummary.slice(0, 2).join("   ·   ") || "Los sistemas se mantienen estables.";
-    this.feedbackColor = this.state.lastEvents.some((event) => event.kind === "collapse") ? COLORS.coral : COLORS.mint;
-    this.rebuildHandAndActionPanel();
-    this.updateHeader();
-    this.updateEventSpotlight();
-    this.refreshBoard();
-    this.animateResourcePanelPulse();
-  }
-
-  private finishResolution(): void {
-    if (!this.pendingApplied) this.applyPendingResolution();
-    this.resolveElapsed = 0;
-    this.pendingApplied = false;
-    if (this.state.status === "over") {
-      this.phase = "over";
-      this.paused = true;
-      this.buildInterface();
-      return;
-    }
-    this.phase = "planning";
-    this.plans = [emptyPlan(), emptyPlan()];
-    this.hoveredUid = undefined;
-    this.currentEventTarget = undefined;
-    this.timerSeconds = PLAN_SECONDS;
-    this.paused = false;
-    this.feedback = this.state.lastEvents.filter((event) => event.kind === "upkeep").map((event) => event.text).join("   ·   ") || "Nuevo día espacial. Planifica con 3 PA.";
-    this.feedbackColor = COLORS.gold;
-    this.buildInterface();
-    this.animateCardsIn();
-  }
-
-  private rebuildHandAndActionPanel(): void {
-    this.buildInterface();
-  }
-
-  private animateResourcePanelPulse(): void {
-    this.colonyPanels.forEach((panel, index) => {
-      this.tweens.add({ targets: panel.container, scaleX: 1.018, scaleY: 1.018, duration: 150, yoyo: true, repeat: 1, delay: index * 90, ease: "Sine.InOut" });
-    });
-  }
-
-  private animateCardsIn(): void {
-    this.cardViews.forEach((view, index) => {
-      view.container.setAlpha(0).setScale(0.82).setY(view.home.y + 34);
-      this.time.delayedCall(index * 65, () => {
-        if (!view.container.active) return;
-        this.tweens.add({ targets: view.container, alpha: 1, scaleX: 1, scaleY: 1, y: view.home.y, duration: 310, ease: "Back.Out" });
-      });
-    });
-  }
-
-  private buildIntroOverlay(): void {
-    if (this.introRoot) return;
-    const width = this.screenWidth;
-    const height = this.screenHeight;
-    const dense = height < 460;
-    const boxWidth = Math.min(this.narrowLayout ? 620 : 690, width - 24);
-    const boxHeight = dense ? height - 16 : Math.min(500, height - 36);
-    const left = width / 2 - boxWidth / 2;
-    const top = height / 2 - boxHeight / 2;
-    const root = this.add.container(0, 0).setDepth(120);
-    this.introRoot = root;
-
-    const shade = this.add.rectangle(width / 2, height / 2, width, height, 0x06102a, 0.78);
-    const panel = this.add.graphics();
-    panel.fillStyle(0x0d1b37, 0.98).fillRoundedRect(left, top, boxWidth, boxHeight, 16);
-    panel.lineStyle(1.5, 0x8493ae, 0.62).strokeRoundedRect(left, top, boxWidth, boxHeight, 16);
-    const accents = [COLORS.gold, COLORS.cyan, 0x7fda8e, COLORS.violet];
-    accents.forEach((color, index) => {
-      panel.fillStyle(color, 0.95).fillRoundedRect(left + 18 + index * 20, top + 13, 14, 3, 1.5);
-    });
-    root.add([shade, panel]);
-
-    const title = this.add.text(width / 2, top + (dense ? 32 : 48), "MISIÓN: SOBREVIVE AL SOL", {
-      fontFamily: 'Impact, "Arial Black", sans-serif',
-      fontSize: dense ? "18px" : "27px",
-      color: "#fff1c5",
-      align: "center",
+  private makeButton(x: number, y: number, width: number, height: number, label: string, action: () => void, style: "primary" | "secondary" | "quiet" = "secondary", compact = false, enabled = true): { container: Phaser.GameObjects.Container; setEnabled: (enabled: boolean) => void; setText: (text: string) => void; setActive: (active: boolean) => void } {
+    const container = this.add.container(x, y);
+    const g = this.add.graphics();
+    const text = this.add.text(0, 0, label, {
+      fontFamily: FONT, fontSize: (compact ? 9 : 11) + "px", fontStyle: "bold",
+      color: style === "primary" ? "#102033" : "#e9eef5", align: "center",
+      wordWrap: { width: width - 18 }, lineSpacing: -1,
     }).setOrigin(0.5);
-    const subtitle = this.add.text(width / 2, top + (dense ? 56 : 82), "Tu colonia frente al Sol. Resiste 15 días espaciales.", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: dense ? "9px" : "14px",
-      fontStyle: "bold",
-      color: "#d8e2f3",
-      align: "center",
-      wordWrap: { width: boxWidth - 44 },
-    }).setOrigin(0.5);
-    const objective = this.add.text(width / 2, top + (dense ? 82 : 122), "OBJETIVO  ·  Mantén las cuatro barras entre 1% y 99% hasta el día 15. Si una termina en 0% o 100%, tu colonia colapsa.", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: dense ? "9px" : "12px",
-      color: "#eef2f8",
-      align: "center",
-      wordWrap: { width: boxWidth - 48 },
+    const zone = this.add.zone(0, 0, width, height).setInteractive({ useHandCursor: true });
+    let hovered = false, pressed = false, active = false, isEnabled = enabled;
+    const redraw = () => {
+      g.clear();
+      const fill = style === "primary" ? (hovered ? 0xffd475 : 0xf0bd58) : style === "secondary" ? (hovered ? 0x253c57 : 0x1c2e46) : (hovered ? 0x213650 : 0x15263c);
+      const stroke = style === "primary" ? 0xffdc8f : style === "secondary" ? (active ? C.cyan : 0x40546d) : 0x31445e;
+      g.fillStyle(fill, isEnabled ? 1 : 0.38).fillRoundedRect(x - width / 2, y - height / 2 + (pressed ? 1 : 0), width, height, 9);
+      g.lineStyle(1, stroke, 0.78).strokeRoundedRect(x - width / 2 + 0.5, y - height / 2 + 0.5, width - 1, height - 1, 8);
+      text.setAlpha(isEnabled ? 1 : 0.5);
+    };
+    zone.on("pointerover", () => { hovered = true; redraw(); this.tweens.add({ targets: container, scale: 1.025, duration: 100 }); });
+    zone.on("pointerout", () => { hovered = false; pressed = false; redraw(); this.tweens.add({ targets: container, scale: 1, duration: 110 }); });
+    zone.on("pointerdown", () => { if (!isEnabled) return; pressed = true; redraw(); });
+    zone.on("pointerup", () => { if (!isEnabled) return; pressed = false; redraw(); action(); });
+    container.add([text, zone]);
+    container.setSize(width, height);
+    redraw();
+    this.ui.add(g);
+    this.ui.add(container);
+    const api = {
+      container,
+      setEnabled: (value: boolean) => { isEnabled = value; if (zone.input) zone.input.enabled = value; redraw(); },
+      setText: (value: string) => { text.setText(value); redraw(); },
+      setActive: (value: boolean) => { active = value; redraw(); },
+    };
+    this.buttons.push(api);
+    return api;
+  }
+
+  private text(x: number, y: number, value: string, size: number, color: number, bold = false, wrap = 520, align: "left" | "center" | "right" = "center"): Phaser.GameObjects.Text {
+    const text = this.add.text(x, y, value, {
+      fontFamily: FONT, fontSize: size + "px", fontStyle: bold ? "bold" : "normal",
+      color: Phaser.Display.Color.IntegerToColor(color).rgba, align,
+      wordWrap: { width: wrap, useAdvancedWrap: true },
       lineSpacing: -1,
-    }).setOrigin(0.5);
-    root.add([title, subtitle, objective]);
+    }).setOrigin(align === "left" ? 0 : align === "right" ? 1 : 0.5);
+    this.ui.add(text);
+    return text;
+  }
 
-    const chipTop = top + (dense ? 113 : 167);
-    const chipHeight = dense ? 25 : 34;
-    const chipGapX = 10;
-    const chipGapY = dense ? 5 : 7;
-    const chipWidth = (boxWidth - 42 - chipGapX) / 2;
-    SYSTEMS.forEach((system, index) => {
-      const col = index % 2;
-      const row = Math.floor(index / 2);
-      const x = width / 2 - chipWidth - chipGapX / 2 + col * (chipWidth + chipGapX);
-      const y = chipTop + row * (chipHeight + chipGapY);
-      const chip = this.add.graphics();
-      chip.fillStyle(system.color, 0.12).fillRoundedRect(x, y, chipWidth, chipHeight, 7);
-      chip.lineStyle(1, system.color, 0.36).strokeRoundedRect(x, y, chipWidth, chipHeight, 7);
-      const icon = this.add.image(x + (dense ? 14 : 18), y + chipHeight / 2, "system-icon-atlas", `system-icon-${system.icon}`)
-        .setDisplaySize(dense ? 17 : 21, dense ? 17 : 21);
-      const name = this.add.text(x + (dense ? 29 : 38), y + chipHeight / 2, system.name.toUpperCase(), {
-        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-        fontSize: dense ? "8px" : "11px",
-        fontStyle: "bold",
-        color: "#eaf0fa",
-      }).setOrigin(0, 0.5);
-      const value = this.add.text(x + chipWidth - 10, y + chipHeight / 2, "50%", {
-        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-        fontSize: dense ? "9px" : "12px",
-        fontStyle: "bold",
-        color: Phaser.Display.Color.IntegerToColor(system.color).rgba,
-      }).setOrigin(1, 0.5);
-      root.add([chip, icon, name, value]);
+  private panel(x: number, y: number, width: number, height: number, alpha = 0.8, color = C.panel): Phaser.GameObjects.Graphics {
+    const g = this.add.graphics();
+    g.fillStyle(color, alpha).fillRoundedRect(x - width / 2, y - height / 2, width, height, 11);
+    g.lineStyle(1, 0x687b94, 0.22).strokeRoundedRect(x - width / 2, y - height / 2, width, height, 11);
+    this.ui.add(g);
+    return g;
+  }
+
+  private hLine(x: number, y: number, width: number, color: number, alpha: number): void {
+    const g = this.add.graphics();
+    g.lineStyle(1, color, alpha).lineBetween(x - width / 2, y, x + width / 2, y);
+    this.ui.add(g);
+  }
+
+  private addDot(x: number, y: number, color: number): void {
+    const dot = this.add.circle(x, y, 3, color);
+    this.ui.add(dot);
+  }
+
+  private effectsLabel(effects: Effects): string {
+    return Object.entries(effects).filter((entry) => entry[1]).map((entry) =>
+      (entry[1]! > 0 ? "+" : "−") + Math.abs(entry[1]!) + " " + SYSTEMS_SHORT[entry[0] as SystemId],
+    ).join("  ·  ");
+  }
+
+  private statusLine(): string {
+    if (this.phase === "resolving") return "MEJORAS → EVENTO GLOBAL → DESGASTE";
+    if (this.online && this.readyText) return this.readyText;
+    return this.banner || "Elige cartas para proteger tu colonia.";
+  }
+
+  private showBanner(message: string, ms = 1700): void {
+    this.banner = message;
+    this.bannerUntil = this.time.now + ms;
+    if (this.statusLabel) this.statusLabel.setText(message);
+  }
+
+  private pad(value: number): string { return value < 10 ? "0" + value : String(value); }
+
+  private setPhase(phase: Phase): void {
+    this.phase = phase;
+    this.drawScene();
+  }
+
+  private onResize(): void {
+    const w = this.scale.width, h = this.scale.height;
+    this.bg.setDisplaySize(w * 1.1, h * 1.1).setPosition(w / 2, h / 2);
+    this.shade.setSize(w, h).setPosition(w / 2, h / 2);
+    this.stars.forEach((star) => { if (star.object.x > w) star.object.x = w; });
+    this.drawScene();
+  }
+
+  private connectRoom(action: "create" | "join", code = ""): void {
+    this.online = true;
+    this.banner = "Conectando con el servidor de salas…";
+    this.setPhase("connecting");
+    const client = new RoomClient();
+    this.roomClient = client;
+    client.onMessage = (message) => this.handleRoomMessage(message);
+    client.onError = (message) => { this.banner = message; this.showBanner(message, 4000); };
+    client.onDisconnect = () => {
+      if (this.phase !== "intro" && this.phase !== "over") {
+        this.banner = "Se perdió la conexión con la sala.";
+        this.state.outcome = { winner: null, reason: "draw", title: "CONEXIÓN PERDIDA", detail: "La sala dejó de responder." };
+        this.setPhase("over");
+      }
+    };
+    client.connect().then(() => {
+      const message: ClientRoomMessage = action === "create" ? { type: "create-room" } : { type: "join-room", roomCode: code };
+      client.send(message);
+    }).catch((error: unknown) => {
+      this.banner = error instanceof Error ? error.message : "No se pudo conectar.";
+      this.online = false;
+      this.setPhase("intro");
     });
-
-    const howY = top + (dense ? 178 : 253);
-    const howTitle = this.add.text(left + 22, howY, "CÓMO SE JUEGA", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: dense ? "9px" : "12px",
-      fontStyle: "bold",
-      color: "#f3d77e",
-      letterSpacing: 0.4,
-    }).setOrigin(0, 0.5);
-    root.add(howTitle);
-    const steps = [
-      "Mano inicial: 3 de supervivencia y 2 ataques. Usa hasta 3 PA para tu base o contra la IA.",
-      "Verde ↑ sube, rojo ↓ baja. Reserva 1 PA para recibir la mitad del daño.",
-      "Ataca, juega supervivencia y aplica el evento NASA cada 3 días. Desgaste desde D2; reabastecimiento: elige barra (+20%).",
-    ];
-    const stepColors = [COLORS.cyan, COLORS.gold, COLORS.violet];
-    const stepTop = top + (dense ? 197 : 278);
-    const stepGap = dense ? 25 : 39;
-    steps.forEach((text, index) => {
-      const y = stepTop + index * stepGap;
-      const number = this.add.circle(left + 31, y, dense ? 9 : 11, stepColors[index], 0.94);
-      const numberText = this.add.text(left + 31, y, `${index + 1}`, {
-        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-        fontSize: dense ? "8px" : "10px",
-        fontStyle: "bold",
-        color: "#13213e",
-      }).setOrigin(0.5);
-      const body = this.add.text(left + 49, y, text, {
-        fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-        fontSize: dense ? "8px" : "11px",
-        color: "#e2e9f4",
-        wordWrap: { width: boxWidth - 78 },
-        maxLines: dense ? 1 : 2,
-      }).setOrigin(0, 0.5);
-      root.add([number, numberText, body]);
-    });
-
-    const buttonY = top + (dense ? 327 : 433);
-    this.introButton = new CanvasButton(this, width / 2, buttonY, Math.min(dense ? 250 : 290, boxWidth - 48), dense ? 38 : 48, "INICIAR DÍA 1", () => this.startMission(), {
-      fill: 0xf3c64b,
-      hover: 0xffd76a,
-      stroke: 0xffedb0,
-      text: "#172447",
-    }, dense ? 12 : 16);
-    const timerNote = this.add.text(width / 2, top + (dense ? 361 : 474), "El reloj de planificación de 15 s comienza al pulsar este botón.", {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
-      fontSize: dense ? "7px" : "9px",
-      color: "#aebbd1",
-      align: "center",
-    }).setOrigin(0.5);
-    root.add([this.introButton.container, timerNote]);
-    this.uiRoot.add(root);
   }
 
-  private startMission(): void {
-    if (this.phase !== "intro") return;
-    this.introButton?.destroy();
-    this.introButton = undefined;
-    if (this.introRoot?.active) this.introRoot.destroy(true);
-    this.introRoot = undefined;
-    this.phase = "planning";
-    this.paused = false;
-    this.timerSeconds = PLAN_SECONDS;
-    this.pauseButton?.setEnabled(true);
-    this.feedback = "Elige cartas (3 PA), revisa las barras y resuelve el turno.";
-    this.feedbackColor = COLORS.cream;
-    this.updateHeader();
-    this.updateActionPanel();
-    this.updateEventSpotlight();
-    this.refreshBoard();
-    this.animateCardsIn();
+  private handleRoomMessage(message: ServerRoomMessage): void {
+    switch (message.type) {
+      case "room-created":
+      case "room-joined":
+        this.roomCode = message.roomCode;
+        this.roomPlayerIndex = message.playerIndex;
+        this.roomCount = message.currentPlayers;
+        this.banner = "Código " + this.roomCode + " · esperando jugadores.";
+        this.setPhase("waiting");
+        break;
+      case "room-status":
+        this.roomCount = message.currentPlayers;
+        this.banner = message.message;
+        if (this.phase === "waiting") this.drawScene();
+        break;
+      case "game-start":
+      case "round-start":
+        this.state = message.state;
+        this.roomPlayerIndex = message.playerIndex;
+        this.locked = false;
+        this.online = true;
+        this.currentEventTarget = null;
+        this.beginPlanning(message.remainingMs / 1000);
+        break;
+      case "plan-locked":
+        this.locked = true;
+        this.readyText = message.message;
+        this.updatePlanControls();
+        if (this.statusLabel) this.statusLabel.setText(message.message);
+        break;
+      case "opponent-ready":
+        this.readyText = message.message;
+        if (this.statusLabel && !this.locked) this.statusLabel.setText(message.message);
+        break;
+      case "round-resolved":
+        this.locked = true;
+        this.resolveTo(message.state);
+        break;
+      case "game-over":
+        this.state = message.state;
+        this.pendingState = null;
+        this.setPhase("over");
+        break;
+      case "opponent-disconnected":
+        this.showBanner(message.message, 3000);
+        break;
+      case "room-error":
+        this.banner = message.message;
+        if (this.phase === "waiting") this.drawScene();
+        else this.showBanner(message.message, 2500);
+        break;
+    }
   }
 
-  private buildOutcomeOverlay(): void {
-    if (!this.state.outcome) return;
-    const shade = this.add.rectangle(this.screenWidth / 2, this.screenHeight / 2, this.screenWidth, this.screenHeight, 0x03091a, 0.78).setDepth(160);
-    const box = this.add.graphics().setDepth(161);
-    const width = Math.min(560, this.screenWidth - 36);
-    const height = 260;
-    box.fillStyle(0x0d1b3a, 0.98).fillRoundedRect(this.screenWidth / 2 - width / 2, this.screenHeight / 2 - height / 2, width, height, 24);
-    box.lineStyle(4, this.state.outcome.winner === 0 ? COLORS.gold : COLORS.coral, 1).strokeRoundedRect(this.screenWidth / 2 - width / 2, this.screenHeight / 2 - height / 2, width, height, 24);
-    const result = this.add.text(this.screenWidth / 2, this.screenHeight / 2 - 54, this.state.outcome.title, {
-      fontFamily: 'Impact, "Arial Black", sans-serif', fontSize: "32px", color: this.state.outcome.winner === 0 ? "#ffdf81" : "#ff8287", align: "center", stroke: "#07132e", strokeThickness: 4,
-    }).setOrigin(0.5).setDepth(162);
-    const detail = this.add.text(this.screenWidth / 2, this.screenHeight / 2 + 2, this.state.outcome.detail, {
-      fontFamily: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif', fontSize: "16px", fontStyle: "bold", color: "#e7efff", align: "center", wordWrap: { width: width - 60 },
-    }).setOrigin(0.5).setDepth(162);
-    const restart = new CanvasButton(this, this.screenWidth / 2, this.screenHeight / 2 + 82, 220, 52, "OTRA MISIÓN", () => this.restart(), {
-      fill: 0x7ce7a0, hover: 0xa1ffbd, stroke: 0xecfff0, text: "#12324a",
-    }, 15);
-    restart.container.setDepth(163);
-    this.uiRoot.add([shade, box, result, detail, restart.container]);
+  private startRoom(): void {
+    if (this.phase !== "waiting" || this.roomPlayerIndex !== 0 || this.roomCount < 2) return;
+    this.roomClient?.send({ type: "start-room" });
   }
 
-  private togglePause(): void {
-    if (this.phase !== "planning") return;
-    this.paused = !this.paused;
-    this.pauseButton?.setText(this.paused ? "SEGUIR" : "PAUSAR");
-    this.setFeedback(this.paused ? "TIEMPO EN PAUSA · elige cartas con calma." : "PLANIFICACIÓN ACTIVA · el reloj vuelve a correr.", this.paused ? COLORS.gold : COLORS.cyan);
-    this.updateHeader();
+  private leaveRoom(): void {
+    this.setPhase("intro");
+    this.roomClient?.send({ type: "leave-room" });
+    this.roomClient?.close();
+    this.roomClient = undefined;
+    this.online = false;
+    this.roomCode = "";
+    this.roomPlayerIndex = null;
+    this.roomCount = 0;
   }
 
   private restart(): void {
-    this.phase = "intro";
-    this.state = createGame("solo", Date.now());
-    this.plans = [emptyPlan(), emptyPlan()];
-    this.timerSeconds = PLAN_SECONDS;
-    this.paused = false;
-    this.resolveElapsed = 0;
-    this.pendingState = null;
-    this.pendingApplied = false;
-    this.hoveredUid = undefined;
-    this.handPage = 0;
-    this.feedback = "Elige cartas (3 PA), revisa las barras y resuelve el turno.";
-    this.feedbackColor = COLORS.cream;
-    this.buildInterface();
+    this.setPhase("intro");
+    this.roomClient?.close();
+    this.roomClient = undefined;
+    this.online = false;
+    this.roomCode = "";
+    this.roomPlayerIndex = null;
+    this.roomCount = 0;
+    this.state = createGame("solo");
+    this.plans = this.state.players.map(() => emptyPlan());
   }
 
-  private getSpotlightDay(): number {
-    return this.state.day % 3 === 0 ? this.state.day : this.state.day + (3 - this.state.day % 3);
+  private createRoomSheet(): void {
+    this.roomSheet = document.getElementById("room-code-sheet") || undefined;
+    this.roomForm = document.getElementById("room-code-form") as HTMLFormElement | null || undefined;
+    this.roomInput = document.getElementById("room-code-input") as HTMLInputElement | null || undefined;
+    this.roomError = document.getElementById("room-code-error") || undefined;
+    this.roomForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const code = (this.roomInput?.value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
+      if (code.length !== 5) { if (this.roomError) this.roomError.textContent = "El código debe tener 5 caracteres."; return; }
+      this.closeRoomSheet();
+      this.connectRoom("join", code);
+    });
+    this.roomSheet?.querySelector("[data-close-room]")?.addEventListener("click", () => this.closeRoomSheet());
   }
 
-  private getSpotlightEvent() {
-    return getEventForDay(this.state, this.getSpotlightDay()) ?? this.state.globalDeck[0];
+  private openRoomSheet(): void {
+    if (!this.roomSheet) return;
+    if (this.roomError) this.roomError.textContent = "";
+    if (this.roomInput) this.roomInput.value = "";
+    this.roomSheet.classList.add("is-open");
+    window.setTimeout(() => this.roomInput?.focus(), 30);
   }
 
-  private setFeedback(message: string, color: number): void {
-    this.feedback = message;
-    this.feedbackColor = color;
-    this.updateEventSpotlight();
-  }
-
-  private scenePulse(target?: Phaser.GameObjects.Container): void {
-    if (!target) return;
-    this.tweens.add({ targets: target, x: target.x + 5, duration: 48, yoyo: true, repeat: 3, ease: "Sine.InOut" });
-  }
+  private closeRoomSheet(): void { this.roomSheet?.classList.remove("is-open"); }
 }

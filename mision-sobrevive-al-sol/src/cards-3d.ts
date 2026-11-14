@@ -1,6 +1,5 @@
 import "./cards-3d.css";
 import {
-  ATTACK_CARDS,
   FAMILIES,
   GLOBAL_EVENTS,
   SURVIVAL_CARDS,
@@ -8,7 +7,7 @@ import {
   type Effects,
 } from "./data";
 
-type CardKind = "survival" | "attack" | "event";
+type CardKind = "survival" | "event";
 
 interface CatalogCard {
   id: string;
@@ -21,18 +20,16 @@ interface CatalogCard {
   cost?: number;
   art: number;
   effects: Effects;
-  selfCost?: Effects;
   science: string;
   detail?: string;
   choice?: number;
-  special?: "conceal";
 }
 
 const root = document.querySelector<HTMLDivElement>("#cards-app");
 if (!root) throw new Error("No se encontró el catálogo de cartas.");
 
 const icons: Record<string, string> = {
-  energy: "⚡", support: "◌", biodome: "✦", armor: "⬡", attack: "☄", event: "✧",
+  energy: "⚡", support: "◌", biodome: "✦", armor: "⬡", event: "✧",
 };
 
 const cards: CatalogCard[] = [
@@ -41,12 +38,6 @@ const cards: CatalogCard[] = [
     familyName: FAMILIES[card.family].name, accent: FAMILIES[card.family].cssColor,
     icon: icons[card.family], cost: card.cost, art: card.art,
     effects: card.effects, science: card.science, detail: card.detail,
-  })),
-  ...ATTACK_CARDS.map((card): CatalogCard => ({
-    id: card.id, name: card.name, kind: "attack", familyKey: "attack",
-    familyName: "ATAQUE", accent: FAMILIES.attack.cssColor, icon: icons.attack,
-    cost: card.cost, art: card.art, effects: card.effects, selfCost: card.selfCost,
-    science: card.science, special: card.special,
   })),
   ...GLOBAL_EVENTS.map((card): CatalogCard => ({
     id: card.id, name: card.name, kind: "event", familyKey: "event",
@@ -67,7 +58,6 @@ const filters = [
   { id: "support", label: "Soporte vital", count: countFor("support") },
   { id: "biodome", label: "Bio-domo", count: countFor("biodome") },
   { id: "armor", label: "Blindaje", count: countFor("armor") },
-  { id: "attack", label: "Ataque", count: countFor("attack") },
   { id: "event", label: "Eventos NASA", count: countFor("event") },
 ];
 
@@ -111,16 +101,6 @@ function renderEffects(card: CatalogCard): string {
       '<span class="effect-tags"><span class="effect-chip is-positive"><strong>+' + card.choice +
       '%</strong><span>AL SISTEMA ELEGIDO</span></span></span></span>';
   }
-  if (card.kind === "attack" && card.special === "conceal") {
-    return '<span class="effect-group"><span class="effect-label">RIVAL</span>' +
-      '<span class="effect-tags"><span class="effect-chip is-special"><strong>···</strong>' +
-      "<span>TELEMETRÍA OCULTA</span></span></span></span>" +
-      effectGroup("COSTO PROPIO", card.selfCost ?? {});
-  }
-  if (card.kind === "attack") {
-    return effectGroup("OBJETIVO · RIVAL", card.effects, "danger") +
-      effectGroup("COSTO PROPIO", card.selfCost ?? {});
-  }
   return effectGroup(card.kind === "event" ? "IMPACTO GLOBAL" : "IMPACTO", card.effects);
 }
 
@@ -136,7 +116,7 @@ function renderCard(card: CatalogCard, index: number): string {
     : '<span class="event-gem"><span>NASA</span><strong>✦</strong></span>';
   const descriptor = card.kind === "event"
     ? "Evento global."
-    : (card.kind === "attack" ? "Ataque." : "Supervivencia.") +
+    : "Supervivencia." +
       " Cuesta " + card.cost + " puntos de acción.";
   const note = card.detail ?? card.science;
 
@@ -164,9 +144,6 @@ function renderCard(card: CatalogCard, index: number): string {
     '<span class="back-title">' + escapeHtml(card.name) + '</span><span class="back-rule"></span>' +
     '<span class="back-note-label">' + (card.kind === "event" ? "DATO DE MISIÓN" : "FUNDAMENTO NASA") + "</span>" +
     '<span class="back-note">' + escapeHtml(note) + "</span>" +
-    (card.kind === "attack" && card.selfCost
-      ? '<span class="back-cost">COSTO DEL LANZADOR ' + effectTags(card.selfCost) + "</span>"
-      : "") +
     '<span class="back-bottomline"><span>NASA SPACE APPS</span><span>15 DÍAS · 1 COLONIA</span></span>' +
     "</span></span>" +
     "</span></button></article>";

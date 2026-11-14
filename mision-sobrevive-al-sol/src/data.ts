@@ -10,12 +10,11 @@ export type ResourceBars = Record<SystemId, number>;
 export type Effects = Partial<Record<SystemId, number>>;
 export type FamilyId = "energy" | "support" | "biodome" | "armor";
 
-export const FAMILIES: Record<FamilyId | "attack", { name: string; color: number; cssColor: string; icon: number | null }> = {
+export const FAMILIES: Record<FamilyId, { name: string; color: number; cssColor: string; icon: number }> = {
   energy: { name: "ENERGÍA", color: 0xffb92f, cssColor: "#ffb92f", icon: 4 },
   support: { name: "SOPORTE VITAL", color: 0x40d9f0, cssColor: "#40d9f0", icon: 5 },
   biodome: { name: "BIO-DOMO", color: 0x76e472, cssColor: "#76e472", icon: 6 },
   armor: { name: "BLINDAJE", color: 0xb08bff, cssColor: "#b08bff", icon: 7 },
-  attack: { name: "ATAQUE", color: 0xff6471, cssColor: "#ff6471", icon: null },
 };
 
 export interface SurvivalCardDefinition {
@@ -30,18 +29,6 @@ export interface SurvivalCardDefinition {
   detail?: string;
 }
 
-export interface AttackCardDefinition {
-  id: string;
-  name: string;
-  shortName: string;
-  cost: number;
-  effects: Effects;
-  selfCost: Effects;
-  art: number;
-  science: string;
-  special?: "conceal";
-}
-
 export interface EventDefinition {
   id: string;
   name: string;
@@ -52,8 +39,8 @@ export interface EventDefinition {
   science: string;
 }
 
-export type CardDefinition = SurvivalCardDefinition | AttackCardDefinition;
-export type CardKind = "survival" | "attack";
+export type CardDefinition = SurvivalCardDefinition;
+export type CardKind = "survival";
 export interface CardInstance {
   uid: string;
   kind: CardKind;
@@ -83,17 +70,6 @@ export const SURVIVAL_CARDS: SurvivalCardDefinition[] = [
   { id: "emergency-seal", name: "Sellado de Emergencia", shortName: "Sellado", family: "armor", cost: 1, effects: { shield: 20, oxygen: -10 }, art: 15, science: "Los compresores del casco purgan aire de las esclusas." },
 ];
 
-export const ATTACK_CARDS: AttackCardDefinition[] = [
-  { id: "solar-overload", name: "Pulso de Sobrecarga Solar", shortName: "Pulso solar", cost: 2, effects: { energy: 30, shield: -15 }, selfCost: { energy: -10 }, art: 0, science: "Empuja la energía rival hacia el límite de incendio." },
-  { id: "oxygen-injection", name: "Inyección de O₂ Puro", shortName: "Inyección de O₂", cost: 2, effects: { oxygen: 30 }, selfCost: { oxygen: -10 }, art: 1, science: "La hiperoxia acerca la atmósfera al riesgo de incendio." },
-  { id: "dust-storm", name: "Tormenta de Polvo Dirigida", shortName: "Tormenta de polvo", cost: 2, effects: { energy: -25, shield: -10 }, selfCost: { shield: -10 }, art: 2, science: "El polvo reduce energía y erosiona el blindaje." },
-  { id: "micrometeorites", name: "Enjambre de Micrometeoritos", shortName: "Micrometeoritos", cost: 2, effects: { shield: -30, oxygen: -10 }, selfCost: { energy: -10 }, art: 3, science: "Los impactos abren microfugas en la base rival." },
-  { id: "telemetry-jam", name: "Interferencia de Telemetría", shortName: "Interferencia", cost: 1, effects: {}, selfCost: { energy: -5 }, art: 4, science: "Oculta los porcentajes exactos del rival durante un turno.", special: "conceal" },
-  { id: "biodome-blight", name: "Plaga en Bio-Domo", shortName: "Plaga", cost: 2, effects: { food: -25, oxygen: -10 }, selfCost: { food: -10 }, art: 5, science: "La plaga reduce el cultivo y el soporte vital." },
-  { id: "cryo-leak", name: "Fuga Criogénica", shortName: "Fuga criogénica", cost: 1, effects: { oxygen: -20 }, selfCost: { energy: -10 }, art: 6, science: "Una fuga enfría y agota el soporte vital rival." },
-  { id: "thermal-sabotage", name: "Sabotaje Térmico", shortName: "Sabotaje térmico", cost: 1, effects: { energy: -20 }, selfCost: { shield: -10 }, art: 7, science: "El fallo térmico drena energía de la colonia rival." },
-];
-
 export const GLOBAL_EVENTS: EventDefinition[] = [
   { id: "lunar-night", name: "Noche Lunar de 14 Días", shortName: "Noche lunar", effects: { energy: -25, food: -10 }, art: 8, science: "En la Luna, la noche dura cerca de 354 horas terrestres." },
   { id: "class-x-flare", name: "Fulguración Solar Clase X", shortName: "Fulguración clase X", effects: { shield: -30, energy: 15 }, art: 9, science: "Una eyección de masa coronal eleva radiación y satura paneles." },
@@ -104,16 +80,12 @@ export const GLOBAL_EVENTS: EventDefinition[] = [
 ];
 
 export const STARTING_RESOURCE: ResourceBars = { energy: 50, oxygen: 50, food: 50, shield: 50 };
-export const HAND_LIMIT = { survival: 3, attack: 2 } as const;
+export const HAND_LIMIT = { survival: 5 } as const;
 export const ACTION_POINTS = 3;
 export const MAX_DAY = 15;
 export const PLAN_SECONDS = 15;
 export const RESOLVE_SECONDS = 5;
 export const SURVIVAL_ATLAS = { cols: 4, rows: 4 } as const;
-export const ATTACKS_ATLAS = { cols: 4, rows: 4 } as const;
+export const EVENTS_ATLAS = { cols: 4, rows: 4 } as const;
 export const ICONS_ATLAS = { cols: 4, rows: 2 } as const;
 export const EFFECTS_ATLAS = { cols: 4, rows: 3 } as const;
-
-export function isAttackCard(card: CardDefinition): card is AttackCardDefinition {
-  return "selfCost" in card;
-}
