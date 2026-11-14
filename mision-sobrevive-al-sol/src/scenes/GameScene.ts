@@ -360,6 +360,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawColonies(w: number, margin: number, compact: boolean): void {
+    if (!compact) {
+      this.drawCentralConsole(w, margin);
+      return;
+    }
     const players = this.state.players;
     const columns = w < 620 ? 1 : 2;
     const rows = Math.ceil(players.length / columns);
@@ -391,6 +395,54 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private drawCentralConsole(w: number, margin: number): void {
+    const rivals = this.state.players.slice(1);
+    const tileGap = 9;
+    const tileWidth = Math.min(360, (w - margin * 2 - tileGap * Math.max(0, rivals.length - 1)) / Math.max(1, rivals.length));
+    const stripWidth = rivals.length * tileWidth + Math.max(0, rivals.length - 1) * tileGap;
+    const stripLeft = w / 2 - stripWidth / 2;
+    this.text(w / 2, 168, "COLONIAS RIVALES · SUS BARRAS", 8, C.muted, true, w - margin * 2);
+    rivals.forEach((player, index) => {
+      const x = stripLeft + index * (tileWidth + tileGap) + tileWidth / 2;
+      const y = 190;
+      this.panel(x, y, tileWidth, 34, player.colony.eliminated ? 0.55 : 0.98, player.colony.eliminated ? 0xe7e2d7 : C.panel);
+      const label = player.colony.eliminated ? "FUERA" : player.name.toUpperCase();
+      const values = SYSTEMS.map((system) => {
+        const short = system.id === "energy" ? "E" : system.id === "oxygen" ? "O₂" : system.id === "food" ? "C" : "ESC";
+        return short + " " + Math.round(player.colony.resources[system.id]);
+      }).join("   ·   ");
+      this.text(x - tileWidth / 2 + 10, y, label, 8, player.colony.eliminated ? C.red : C.cyan, true, tileWidth * 0.27, "left");
+      this.text(x + tileWidth / 2 - 10, y, player.colony.eliminated ? "ELIMINADA" : values, 8, C.text, true, tileWidth * 0.66, "right");
+    });
+
+    const consoleW = Math.min(860, w - margin * 2);
+    const consoleH = 154;
+    const centerX = w / 2;
+    const top = 213;
+    this.panel(centerX, top + consoleH / 2, consoleW, consoleH, 1, 0xe7e2d7);
+    const frame = this.add.graphics();
+    frame.lineStyle(2.5, 0x39709a, 0.82).strokeRoundedRect(centerX - consoleW / 2 - 4, top - 4, consoleW + 8, consoleH + 8, 13);
+    frame.lineStyle(1, 0x39709a, 0.32).strokeRoundedRect(centerX - consoleW / 2 + 4, top + 4, consoleW - 8, consoleH - 8, 10);
+    this.ui.add(frame);
+    this.text(centerX, top + 16, "TU CONSOLA · MANTÉN CADA BARRA ENTRE 1% Y 99%", 9, C.text, true, consoleW - 32);
+
+    const innerW = consoleW - 48;
+    const moduleGap = 14;
+    const moduleW = (innerW - moduleGap) / 2;
+    SYSTEMS.forEach((system, index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const moduleX = centerX - innerW / 2 + column * (moduleW + moduleGap) + moduleW / 2;
+      const moduleTop = top + 31 + row * 59;
+      const moduleH = 55;
+      const module = this.add.graphics();
+      module.fillStyle(0xf8f6f0, 0.98).fillRoundedRect(moduleX - moduleW / 2, moduleTop, moduleW, moduleH, 7);
+      module.lineStyle(1.3, SYSTEMS_COLOR[system.id], 0.55).strokeRoundedRect(moduleX - moduleW / 2 + 0.5, moduleTop + 0.5, moduleW - 1, moduleH - 1, 7);
+      this.ui.add(module);
+      this.resourceUi.push(this.makeResource(moduleX, moduleTop + 28, moduleW - 22, 0, system.id));
+    });
+  }
+
   private makeResource(x: number, y: number, width: number, playerIndex: number, system: SystemId): ResourceUi {
     const g = this.add.graphics();
     const name = this.add.text(x - width / 2, y - 5, SYSTEMS_SHORT[system], {
@@ -414,8 +466,7 @@ export class GameScene extends Phaser.Scene {
 
   private drawHand(w: number, h: number, margin: number, compact: boolean): void {
     const y = h - (compact ? 228 : 240);
-    this.text(w / 2, y - 51, compact ? "Toca carta para elegir · barra para ver resultado" : "TOCA UNA CARTA PARA AÑADIRLA · LOS EFECTOS SE VEN EN LAS BARRAS", compact ? 8 : 9, C.muted, true, w - margin * 2);
-    this.text(margin + 2, y - 20, compact ? "TUS CARTAS" : "TU PLAN", compact ? 9 : 10, C.text, true, 100, "left");
+    this.text(margin + 2, y - 20, compact ? "TOCA PARA ELEGIR CARTA" : "TU PLAN · TOCA PARA AÑADIR O QUITAR", compact ? 8 : 9, C.text, true, 270, "left");
     this.paLabel = this.add.text(w - margin, y - 20, "", { fontFamily: FONT, fontSize: compact ? "9px" : "10px", fontStyle: "bold", color: "#f0bd58" }).setOrigin(1, 0.5);
     this.ui.add(this.paLabel);
     const hand = this.state.players[0].survivalHand;
@@ -440,6 +491,8 @@ export class GameScene extends Phaser.Scene {
           if (py > h - (compact ? 70 : 76)) this.toggleCard(selected);
         },
       });
+      const spread = index - (shown.length - 1) / 2;
+      view.setFan(spread * 2.2, Math.abs(spread) * 3);
       this.cards.push(view);
       this.ui.add(view.container);
       view.setSelected(isCardSelected(this.plans[0], card.uid), false);

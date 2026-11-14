@@ -40,6 +40,7 @@ export class SurvivalCard {
   private selected = false;
   private enabled = true;
   private dragging = false;
+  private homeAngle = 0;
   private start = { x: 0, y: 0 };
   private home = { x: 0, y: 0 };
 
@@ -116,8 +117,14 @@ export class SurvivalCard {
       if (Phaser.Math.Distance.Between(pointer.x, pointer.y, this.start.x, this.start.y) > 16) this.events.drop(instance, pointer.x, pointer.y);
       this.dragging = false;
       this.container.setDepth(1);
-      this.scene.tweens.add({ targets: this.container, x: this.home.x, y: this.home.y + (this.selected ? -4 : 0), scale: this.selected ? 1.025 : 1, duration: 145, ease: "Sine.Out" });
+      this.scene.tweens.add({ targets: this.container, x: this.home.x, y: this.home.y + (this.selected ? -4 : 0), angle: this.homeAngle, scale: this.selected ? 1.025 : 1, duration: 145, ease: "Sine.Out" });
     });
+  }
+
+  setFan(angle: number, verticalOffset: number): void {
+    this.homeAngle = angle;
+    this.home.y += verticalOffset;
+    this.container.setPosition(this.home.x, this.home.y).setAngle(angle);
   }
 
   setSelected(value: boolean, animate = true): void {
