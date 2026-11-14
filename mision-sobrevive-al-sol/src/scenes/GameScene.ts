@@ -139,7 +139,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
     if (this.banner && time >= this.bannerUntil && this.statusLabel && this.phase === "planning") {
-      this.statusLabel.setText(this.online && this.readyText ? this.readyText : "Elige cartas para proteger tu colonia.");
+      this.statusLabel.setText(this.statusLine());
     }
   }
 
@@ -335,6 +335,8 @@ export class GameScene extends Phaser.Scene {
       const own = index === 0;
       this.panel(x, y, cellW, cellH, player.colony.eliminated ? 0.55 : 0.98, own ? 0xe7e2d7 : C.panel);
       this.text(x - cellW / 2 + 11, y - cellH / 2 + 12, player.colony.eliminated ? "COLONIA ELIMINADA" : own ? "TU COLONIA" : player.name.toUpperCase(), compact ? 8 : 9, player.colony.eliminated ? C.red : own ? C.cyan : C.muted, true, cellW * 0.42, "left");
+      const alert = Object.values(player.colony.resources).some((value) => value < 25 || value > 75);
+      if (alert && !player.colony.eliminated) this.text(x + cellW / 2 - 12, y - cellH / 2 + 12, "ALERTA", compact ? 7 : 8, C.red, true, 54, "right");
       const valuesTop = y - cellH / 2 + (cellH < 90 ? 35 : cellH * 0.52);
       const innerLeft = x - cellW / 2 + 12;
       const innerW = cellW - 24;
@@ -529,7 +531,7 @@ export class GameScene extends Phaser.Scene {
     this.hoverUid = undefined;
     this.readyText = "";
     this.drawScene();
-    this.showBanner("Elige cartas para proteger tu colonia.", 1800);
+    this.showBanner("Toca una carta: revisa el pronóstico antes de confirmar.", 1800);
   }
 
   private confirmPlan(): void {
@@ -682,6 +684,9 @@ export class GameScene extends Phaser.Scene {
   private statusLine(): string {
     if (this.phase === "resolving") return "MEJORAS → EVENTO GLOBAL → DESGASTE";
     if (this.online && this.readyText) return this.readyText;
+    if (this.phase === "planning") return this.online
+      ? "Planes secretos · confirma para revelar la ronda."
+      : "Toca una carta: mira cómo quedarían las cuatro barras.";
     return this.banner || "Elige cartas para proteger tu colonia.";
   }
 
