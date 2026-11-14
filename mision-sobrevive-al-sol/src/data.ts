@@ -80,7 +80,7 @@ export const GLOBAL_EVENTS: EventDefinition[] = [
 ];
 
 export const STARTING_RESOURCE: ResourceBars = { energy: 50, oxygen: 50, food: 50, shield: 50 };
-export const HAND_LIMIT = { survival: 5 } as const;
+export const HAND_LIMIT = { survival: 3 } as const;
 export const ACTION_POINTS = 3;
 export const MAX_DAY = 15;
 export const PLAN_SECONDS = 15;

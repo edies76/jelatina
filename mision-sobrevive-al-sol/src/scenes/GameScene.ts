@@ -1,11 +1,8 @@
 import Phaser from "phaser";
 import {
   ACTION_POINTS,
-  EVENTS_ATLAS,
-  ICONS_ATLAS,
   PLAN_SECONDS,
   RESOLVE_SECONDS,
-  SURVIVAL_ATLAS,
   SYSTEMS,
   type CardInstance,
   type Effects,
@@ -35,9 +32,9 @@ type Star = { object: Phaser.GameObjects.Arc; speed: number; baseY: number; offs
 type ResourceUi = { graphics: Phaser.GameObjects.Graphics; value: Phaser.GameObjects.Text; preview: Phaser.GameObjects.Text; x: number; y: number; width: number; playerIndex: number; system: SystemId };
 
 const C = {
-  bg: 0x081328, panel: 0x101f39, panel2: 0x142642, line: 0x2a3d5b,
-  text: 0xf3f5f7, muted: 0x9cacc2, gold: 0xf0bd58, green: 0x6cdaa0,
-  red: 0xf17d7a, cyan: 0x65cbd7, violet: 0xb69ae8, white: 0xffffff,
+  bg: 0xeeeae1, panel: 0xf8f6f0, panel2: 0xe7e2d7, line: 0x607085,
+  text: 0x172338, muted: 0x596779, gold: 0xba674f, green: 0x347b68,
+  red: 0xb95756, cyan: 0x39709a, violet: 0x755c91, white: 0xffffff,
 };
 const FONT = '"Trebuchet MS", Arial, sans-serif';
 const SYSTEMS_COLOR: Record<SystemId, number> = { energy: C.gold, oxygen: C.cyan, food: C.green, shield: C.violet };
@@ -65,8 +62,7 @@ export class GameScene extends Phaser.Scene {
   private resolutionDuration = 1250;
   private resolutionProgress = 0;
   private hoverUid?: string;
-  private bg!: Phaser.GameObjects.Image;
-  private shade!: Phaser.GameObjects.Rectangle;
+  private doodles!: Phaser.GameObjects.Graphics;
   private stars: Star[] = [];
   private ui!: Phaser.GameObjects.Container;
   private cards: SurvivalCard[] = [];
@@ -87,15 +83,10 @@ export class GameScene extends Phaser.Scene {
   constructor() { super("GameScene"); }
 
   preload(): void {
-    this.load.image("world", new URL("../../assets/lunar-outpost-background.png", import.meta.url).href);
-    this.load.image("cards", new URL("../../assets/survival-cards-atlas.png", import.meta.url).href);
-    this.load.image("events", new URL("../../assets/attack-events-atlas.png", import.meta.url).href);
-    this.load.image("icons", new URL("../../assets/system-family-icons-atlas.png", import.meta.url).href);
   }
 
   create(): void {
     this.createGameLayers();
-    this.createFrames();
     this.createRoomSheet();
     this.drawScene();
     if (new URLSearchParams(window.location.search).get("mode") === "practice") this.startPractice();
@@ -121,7 +112,6 @@ export class GameScene extends Phaser.Scene {
 
   update(time: number, delta: number): void {
     const dt = Math.min(delta, 50) / 1000;
-    this.bg.setPosition(this.scale.width / 2 + Math.sin(time / 9000) * 5, this.scale.height / 2 + Math.sin(time / 7000) * 3);
     for (const star of this.stars) {
       star.object.x += star.speed * dt;
       if (star.object.x > this.scale.width + 3) star.object.x = -3;
@@ -156,33 +146,34 @@ export class GameScene extends Phaser.Scene {
   private createGameLayers(): void {
     const w = this.scale.width;
     const h = this.scale.height;
-    this.bg = this.add.image(w / 2, h / 2, "world").setDepth(-20).setDisplaySize(w * 1.1, h * 1.1).setAlpha(0.34);
-    this.shade = this.add.rectangle(w / 2, h / 2, w, h, C.bg, 0.78).setDepth(-19);
+    this.cameras.main.setBackgroundColor("#eeeae1");
+    this.doodles = this.add.graphics().setDepth(-20);
+    this.drawBackgroundSketch();
     this.stars = [];
-    const count = w < 700 ? 24 : 46;
+    const count = w < 700 ? 14 : 24;
     for (let i = 0; i < count; i += 1) {
       const bright = i % 8 === 0;
-      const star = this.add.circle(Phaser.Math.Between(0, w), Phaser.Math.Between(0, h), bright ? 1.6 : 0.8, bright ? 0xc2d9f1 : 0xffffff, bright ? 0.55 : 0.3).setDepth(-18);
+      const star = this.add.circle(Phaser.Math.Between(0, w), Phaser.Math.Between(0, h), bright ? 1.5 : 0.8, bright ? C.cyan : C.line, bright ? 0.32 : 0.16).setDepth(-18);
       this.stars.push({ object: star, speed: bright ? 7 : 2.3, baseY: star.y, offset: Math.random() * 6 });
     }
   }
 
-  private createFrames(): void {
-    this.addFrames("cards", "card-art", SURVIVAL_ATLAS.cols, SURVIVAL_ATLAS.rows);
-    this.addFrames("events", "event-art", EVENTS_ATLAS.cols, EVENTS_ATLAS.rows);
-    this.addFrames("icons", "system-icon", ICONS_ATLAS.cols, ICONS_ATLAS.rows);
-  }
-
-  private addFrames(textureKey: string, prefix: string, cols: number, rows: number): void {
-    const texture = this.textures.get(textureKey);
-    const source = texture.getSourceImage() as HTMLImageElement;
-    const width = source.width / cols;
-    const height = source.height / rows;
-    const frames = texture.frames as Record<string, Phaser.Textures.Frame>;
-    for (let y = 0; y < rows; y += 1) for (let x = 0; x < cols; x += 1) {
-      const key = prefix + "-" + (y * cols + x);
-      if (!frames[key]) texture.add(key, 0, Math.floor(x * width), Math.floor(y * height), Math.ceil(width), Math.ceil(height));
-    }
+  private drawBackgroundSketch(): void {
+    if (!this.doodles) return;
+    const w = this.scale.width, h = this.scale.height;
+    const g = this.doodles;
+    g.clear();
+    g.lineStyle(1.5, C.cyan, 0.14);
+    g.strokeCircle(54, 130, 29);
+    g.strokeEllipse(54, 130, 96, 24);
+    g.lineStyle(1, C.gold, 0.18);
+    g.beginPath();
+    g.moveTo(w - 168, 81); g.lineTo(w - 120, 93); g.lineTo(w - 83, 112);
+    g.moveTo(w - 127, 85); g.lineTo(w - 135, 103);
+    g.strokePath();
+    g.lineStyle(1, C.line, 0.12);
+    g.strokeCircle(w - 73, h - 82, 18);
+    g.strokeCircle(w - 73, h - 82, 24);
   }
 
   private drawScene(): void {
@@ -305,7 +296,7 @@ export class GameScene extends Phaser.Scene {
     const y = compact ? 92 : 107;
     const height = compact ? 52 : 58;
     const event = getEventForDay(this.state);
-    this.panel(w / 2, y, w - margin * 2, height, 0.72, 0x1c2b41);
+    this.panel(w / 2, y, w - margin * 2, height, 0.96, C.panel);
     if (!event) {
       const nextDay = (Math.floor((this.state.day - 1) / 3) + 1) * 3;
       this.text(margin + 13, y - 7, "PRÓXIMO EVENTO · DÍA " + nextDay, compact ? 8 : 9, C.muted, true, w * 0.4, "left");
@@ -313,9 +304,15 @@ export class GameScene extends Phaser.Scene {
       this.text(w - margin - 13, y + 10, "DESGASTE −" + wearForDay(this.state.day + 1) + "%", compact ? 8 : 9, C.gold, true, 150, "right");
       return;
     }
-    const art = this.add.image(margin + (compact ? 31 : 38), y, "events", "event-art-" + event.definition.art)
-      .setDisplaySize(compact ? 39 : 48, compact ? 39 : 48);
-    this.ui.add(art);
+    const mark = this.add.graphics();
+    const mx = margin + (compact ? 29 : 36);
+    mark.lineStyle(1.5, C.gold, 0.95).strokeCircle(mx, y, compact ? 13 : 16);
+    mark.lineStyle(1.5, C.gold, 0.68);
+    mark.lineBetween(mx - 21, y, mx - 17, y);
+    mark.lineBetween(mx + 17, y, mx + 21, y);
+    mark.lineBetween(mx, y - 21, mx, y - 17);
+    mark.lineBetween(mx, y + 17, mx, y + 21);
+    this.ui.add(mark);
     this.text(margin + (compact ? 58 : 70), y - 10, "EVENTO GLOBAL · DÍA " + this.state.day, compact ? 8 : 9, C.gold, true, w * 0.55, "left");
     this.text(margin + (compact ? 58 : 70), y + 9, event.definition.shortName, compact ? 11 : 14, C.text, true, w * 0.58, "left");
     const choiceText = event.definition.choice ? "ELIGE UNA BARRA · +" + event.definition.choice + "%" : this.effectsLabel(event.definition.effects || {});
@@ -329,14 +326,14 @@ export class GameScene extends Phaser.Scene {
     const top = compact ? 136 : 167;
     const gapX = 10, gapY = compact ? 6 : 8;
     const cellW = (w - margin * 2 - gapX * (columns - 1)) / columns;
-    const areaH = compact ? Math.min(225, this.scale.height * 0.32) : 160;
+    const areaH = compact ? Math.min(225, this.scale.height * 0.32) : players.length <= 2 ? 112 : 160;
     const cellH = (areaH - gapY * (rows - 1)) / rows;
     players.forEach((player, index) => {
       const col = index % columns, row = Math.floor(index / columns);
       const x = margin + cellW / 2 + col * (cellW + gapX);
       const y = top + cellH / 2 + row * (cellH + gapY);
       const own = index === 0;
-      this.panel(x, y, cellW, cellH, player.colony.eliminated ? 0.28 : own ? 0.88 : 0.54, own ? 0x243957 : C.panel);
+      this.panel(x, y, cellW, cellH, player.colony.eliminated ? 0.55 : 0.98, own ? 0xe7e2d7 : C.panel);
       this.text(x - cellW / 2 + 11, y - cellH / 2 + 12, player.colony.eliminated ? "COLONIA ELIMINADA" : own ? "TU COLONIA" : player.name.toUpperCase(), compact ? 8 : 9, player.colony.eliminated ? C.red : own ? C.cyan : C.muted, true, cellW * 0.42, "left");
       const valuesTop = y - cellH / 2 + (cellH < 90 ? 35 : cellH * 0.52);
       const innerLeft = x - cellW / 2 + 12;
@@ -354,13 +351,13 @@ export class GameScene extends Phaser.Scene {
   private makeResource(x: number, y: number, width: number, playerIndex: number, system: SystemId): ResourceUi {
     const g = this.add.graphics();
     const name = this.add.text(x - width / 2, y - 5, SYSTEMS_SHORT[system], {
-      fontFamily: FONT, fontSize: width < 75 ? "7px" : "8px", fontStyle: "bold", color: "#aab6c6",
+      fontFamily: FONT, fontSize: width < 75 ? "8px" : "9px", fontStyle: "bold", color: "#596779",
     }).setOrigin(0, 0.5);
     const value = this.add.text(x + width / 2, y - 5, "50%", {
-      fontFamily: FONT, fontSize: width < 75 ? "9px" : "10px", fontStyle: "bold", color: "#f3f5f7",
+      fontFamily: FONT, fontSize: width < 75 ? "9px" : "11px", fontStyle: "bold", color: "#172338",
     }).setOrigin(1, 0.5);
     const preview = this.add.text(x + width / 2, y + 11, "", {
-      fontFamily: FONT, fontSize: width < 75 ? "7px" : "8px", fontStyle: "bold", color: "#9cacc2",
+      fontFamily: FONT, fontSize: width < 75 ? "8px" : "9px", fontStyle: "bold", color: "#596779",
     }).setOrigin(1, 0.5);
     const container = this.add.container(0, 0, [g, name, value, preview]);
     if (playerIndex === 0 && getEventForDay(this.state)?.definition.choice) {
@@ -380,7 +377,7 @@ export class GameScene extends Phaser.Scene {
     const hand = this.state.players[0].survivalHand;
     const columns = compact ? Math.min(3, hand.length) : hand.length;
     const cardGap = compact ? 7 : 10;
-    const maxCardW = compact ? 162 : 194;
+    const maxCardW = compact ? 220 : 270;
     const cardW = Math.min(maxCardW, (w - margin * 2 - cardGap * (columns - 1)) / columns);
     const cardH = compact ? Math.min(142, h * 0.19) : Math.min(155, h * 0.215);
     const visible = compact ? Math.min(3, hand.length) : hand.length;
@@ -421,8 +418,8 @@ export class GameScene extends Phaser.Scene {
     const totalW = shieldW + primaryW + gap;
     const shieldX = w / 2 - totalW / 2 + shieldW / 2;
     const primaryX = shieldX + shieldW / 2 + gap + primaryW / 2;
-    this.shieldButton = this.makeButton(shieldX, y, shieldW, compact ? 36 : 40, "RESERVAR 1 PA", () => this.toggleShield(), "secondary", compact);
-    this.planButton = this.makeButton(primaryX, y, primaryW, compact ? 40 : 44, this.online ? "ENVIAR PLAN" : "RESOLVER RONDA", () => this.confirmPlan(), "primary", compact);
+    this.shieldButton = this.makeButton(shieldX, y, shieldW, compact ? 38 : 42, "MITAD DE IMPACTO Y DESGASTE · 1 PA", () => this.toggleShield(), "secondary", compact);
+    this.planButton = this.makeButton(primaryX, y, primaryW, compact ? 40 : 44, this.online ? "CONFIRMAR PLAN" : "JUGAR RONDA", () => this.confirmPlan(), "primary", compact);
     const drop = this.add.zone(primaryX, y, primaryW, 48).setRectangleDropZone(primaryW, 48);
     drop.setDepth(2);
     this.ui.add(drop);
@@ -471,14 +468,16 @@ export class GameScene extends Phaser.Scene {
       const g = entry.graphics;
       g.clear();
       const left = entry.x - entry.width / 2;
-      g.fillStyle(0x26354b, 0.95).fillRoundedRect(left, entry.y + 3, entry.width, 5, 2.5);
+      g.fillStyle(0xd3d0c7, 0.95).fillRoundedRect(left, entry.y + 3, entry.width, 5, 2.5);
       g.fillStyle(color, 0.95).fillRoundedRect(left, entry.y + 3, entry.width * clamped / 100, 5, 2.5);
       if (delta !== 0) {
-        g.fillStyle(collapse ? C.red : delta > 0 ? C.green : C.red, 0.88).fillRoundedRect(left, entry.y + 3, entry.width * Math.abs(delta) / 100, 5, 2.5);
+        const from = left + entry.width * clamped / 100;
+        const to = left + entry.width * shown / 100;
+        g.fillStyle(collapse ? C.red : delta > 0 ? C.green : C.red, 0.9).fillRoundedRect(Math.min(from, to), entry.y + 3, Math.max(2, Math.abs(to - from)), 5, 2.5);
       }
-      entry.value.setText(Math.round(start) + "%").setColor(player.colony.eliminated ? "#667080" : collapse ? "#f17d7a" : "#f3f5f7");
+      entry.value.setText(Math.round(start) + "%").setColor(player.colony.eliminated ? "#87909a" : collapse ? "#b95756" : "#172338");
       if (entry.playerIndex === 0 && this.phase === "planning" && (delta !== 0 || this.hoverUid)) {
-        entry.preview.setText("→ " + Math.round(end) + "%").setColor(collapse ? "#f17d7a" : delta > 0 ? "#6cdaa0" : "#f0bd58");
+        entry.preview.setText("→ " + Math.round(end) + "%").setColor(collapse ? "#b95756" : delta > 0 ? "#347b68" : "#ba674f");
       } else {
         entry.preview.setText(player.colony.eliminated ? "fuera" : "");
       }
@@ -492,11 +491,11 @@ export class GameScene extends Phaser.Scene {
     this.cards.forEach((card) => card.setSelected(isCardSelected(this.plans[0], card.instance.uid)));
     this.cards.forEach((card) => card.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated));
     this.shieldButton?.setActive(this.plans[0].reserveShield);
-    this.shieldButton?.setText(this.plans[0].reserveShield ? "ESCUDO · MITAD DE DAÑO" : "RESERVAR 1 PA");
+    this.shieldButton?.setText(this.plans[0].reserveShield ? "ACTIVO · −50% · EVENTO Y DESGASTE" : "MITAD DE IMPACTO Y DESGASTE · 1 PA");
     this.shieldButton?.setEnabled(this.phase === "planning" && !this.locked);
     const needsTarget = Boolean(getEventForDay(this.state)?.definition.choice) && !this.plans[0].globalTargetChosen;
     this.planButton?.setEnabled(this.phase === "planning" && !this.locked && !this.state.players[0].colony.eliminated && !needsTarget);
-    this.planButton?.setText(this.locked ? "ESPERANDO A LAS COLONIAS…" : this.online ? "ENVIAR PLAN" : "RESOLVER RONDA");
+    this.planButton?.setText(this.locked ? "ESPERANDO…" : this.online ? "CONFIRMAR PLAN" : "JUGAR RONDA");
   }
 
   private updateTimer(): void {
@@ -505,7 +504,7 @@ export class GameScene extends Phaser.Scene {
     const left = this.phase === "resolving" ? Math.max(0, this.resolutionDuration / 1000 - (this.time.now - this.resolutionStarted) / 1000) : this.timer;
     this.timerLabel.setText(this.phase === "over" ? "FIN" : this.phase === "waiting" ? "—" : this.phase === "resolving" ? "…" : Math.ceil(left) + "s");
     this.timerGraphics.clear();
-    this.timerGraphics.fillStyle(0x29374a, 0.95).fillRoundedRect(w - 102, this.mobile ? 54 : 61, 74, 4, 2);
+    this.timerGraphics.fillStyle(0xd3d0c7, 0.95).fillRoundedRect(w - 102, this.mobile ? 54 : 61, 74, 4, 2);
     const proportion = this.phase === "planning" ? Phaser.Math.Clamp(left / PLAN_SECONDS, 0, 1) : 1;
     this.timerGraphics.fillStyle(left < 5 ? C.red : C.gold, 1).fillRoundedRect(w - 102, this.mobile ? 54 : 61, 74 * proportion, 4, 2);
   }
@@ -584,7 +583,7 @@ export class GameScene extends Phaser.Scene {
   private toggleShield(): void {
     if (this.phase !== "planning" || this.locked) return;
     if (!toggleEmergencyShield(this.state.players[0], this.plans[0])) {
-      this.showBanner("Quita una carta para reservar 1 PA.", 1500);
+      this.showBanner("El escudo consume 1 PA. Quita una mejora para activarlo.", 1500);
       return;
     }
     this.updatePlanControls();
@@ -612,17 +611,17 @@ export class GameScene extends Phaser.Scene {
     const g = this.add.graphics();
     const text = this.add.text(0, 0, label, {
       fontFamily: FONT, fontSize: (compact ? 9 : 11) + "px", fontStyle: "bold",
-      color: style === "primary" ? "#102033" : "#e9eef5", align: "center",
+      color: style === "primary" ? "#fffaf2" : "#172338", align: "center",
       wordWrap: { width: width - 18 }, lineSpacing: -1,
     }).setOrigin(0.5);
     const zone = this.add.zone(0, 0, width, height).setInteractive({ useHandCursor: true });
     let hovered = false, pressed = false, active = false, isEnabled = enabled;
     const redraw = () => {
       g.clear();
-      const fill = style === "primary" ? (hovered ? 0xffd475 : 0xf0bd58) : style === "secondary" ? (hovered ? 0x253c57 : 0x1c2e46) : (hovered ? 0x213650 : 0x15263c);
-      const stroke = style === "primary" ? 0xffdc8f : style === "secondary" ? (active ? C.cyan : 0x40546d) : 0x31445e;
-      g.fillStyle(fill, isEnabled ? 1 : 0.38).fillRoundedRect(x - width / 2, y - height / 2 + (pressed ? 1 : 0), width, height, 9);
-      g.lineStyle(1, stroke, 0.78).strokeRoundedRect(x - width / 2 + 0.5, y - height / 2 + 0.5, width - 1, height - 1, 8);
+      const fill = style === "primary" ? (hovered ? 0xa85443 : C.gold) : style === "secondary" ? (hovered ? 0xded9cf : 0xe7e2d7) : (hovered ? 0xe3dfd7 : C.panel);
+      const stroke = style === "primary" ? 0x9f5746 : style === "secondary" ? (active ? C.cyan : C.line) : C.line;
+      g.fillStyle(fill, isEnabled ? 1 : 0.38).fillRoundedRect(x - width / 2, y - height / 2 + (pressed ? 1 : 0), width, height, 7);
+      g.lineStyle(1, stroke, 0.68).strokeRoundedRect(x - width / 2 + 0.5, y - height / 2 + 0.5, width - 1, height - 1, 7);
       text.setAlpha(isEnabled ? 1 : 0.5);
     };
     zone.on("pointerover", () => { hovered = true; redraw(); this.tweens.add({ targets: container, scale: 1.025, duration: 100 }); });
@@ -701,8 +700,7 @@ export class GameScene extends Phaser.Scene {
 
   private onResize(): void {
     const w = this.scale.width, h = this.scale.height;
-    this.bg.setDisplaySize(w * 1.1, h * 1.1).setPosition(w / 2, h / 2);
-    this.shade.setSize(w, h).setPosition(w / 2, h / 2);
+    this.drawBackgroundSketch();
     this.stars.forEach((star) => { if (star.object.x > w) star.object.x = w; });
     this.drawScene();
   }

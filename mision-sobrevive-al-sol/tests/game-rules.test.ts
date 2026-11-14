@@ -20,11 +20,11 @@ function survival(player: ReturnType<typeof createGame>["players"][number], id: 
 }
 
 describe("reglas de Misión: Sobrevive al Sol", () => {
-  it("inicia 2 colonias de práctica y 2–4 colonias online con cinco cartas de supervivencia", () => {
+  it("inicia 2 colonias de práctica y 2–4 colonias online con tres cartas de supervivencia", () => {
     const solo = createGame("solo", 1234);
     expect(solo.players).toHaveLength(2);
     expect(solo.players[0].colony.resources).toEqual({ energy: 50, oxygen: 50, food: 50, shield: 50 });
-    expect(solo.players[0].survivalHand).toHaveLength(5);
+    expect(solo.players[0].survivalHand).toHaveLength(3);
     expect(solo.players[0].survivalHand.every((card) => card.kind === "survival")).toBe(true);
     expect("attackHand" in solo.players[0]).toBe(false);
     expect(createGame("multiplayer", 45, 2).players).toHaveLength(2);

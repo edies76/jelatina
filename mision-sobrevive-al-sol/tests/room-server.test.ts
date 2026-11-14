@@ -67,7 +67,7 @@ describe("sala online de supervivencia", () => {
     expect(states.every((entry) => Boolean(entry.state.players))).toBe(true);
     states.forEach((entry) => {
       expect(entry.state.players).toHaveLength(4);
-      expect(entry.state.players[0].survivalHand).toHaveLength(5);
+      expect(entry.state.players[0].survivalHand).toHaveLength(3);
       expect(entry.state.players.slice(1).every((player) => player.survivalHand.length === 0)).toBe(true);
     });
 
